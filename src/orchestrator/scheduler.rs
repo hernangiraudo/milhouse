@@ -1,7 +1,8 @@
 use super::dag::Dag;
 use super::progress::{ProgressEvent, ProgressReporter, StepUpdate, StepUpdateMsg};
 use super::state::{
-    ColumnMeta, JobState, JobStatus, LogLine, StepInfo, StepRuntimeState, TableSample,
+    ColumnMeta, GroupMetaDto, JobState, JobStatus, LogLine, StepInfo, StepRuntimeState,
+    TableSample,
 };
 use crate::config::{ConnectionsFile, EtlConfig, Step};
 use crate::engine::{execute_step, ConnectionPool, StepContext, TableStore};
@@ -38,6 +39,8 @@ impl JobHandle {
 pub async fn run_job(
     job_id: String,
     config_name: String,
+    user: Option<String>,
+    debug: bool,
     cfg: EtlConfig,
     connections: ConnectionsFile,
 ) -> Result<JobHandle> {
@@ -55,13 +58,18 @@ pub async fn run_job(
     for s in &cfg.steps {
         step_order.push(s.id.clone());
         let spec = serde_json::to_value(s).unwrap_or(serde_json::Value::Null);
+        let step_uid = s
+            .step_uid
+            .expect("step_uid must be assigned before run_job (call ensure_step_uids)");
         steps_map.insert(
             s.id.clone(),
             StepInfo {
+                step_uid,
                 id: s.id.clone(),
                 kind: s.kind_str().to_string(),
                 depends_on: s.depends_on.clone(),
                 output_table: s.output_table().map(|s| s.to_string()),
+                group: s.group.clone(),
                 state: StepRuntimeState::Pending,
                 logs: Vec::new(),
                 sample: None,
@@ -69,14 +77,49 @@ pub async fn run_job(
             },
         );
     }
+
+    // Lista de grupos: primero los explícitamente declarados (orden del config),
+    // luego cualquier grupo referenciado por un step que no esté declarado.
+    let mut groups: Vec<GroupMetaDto> = cfg
+        .groups
+        .iter()
+        .map(|g| GroupMetaDto {
+            name: g.name.clone(),
+            description: g.description.clone(),
+            color: g.color.clone(),
+        })
+        .collect();
+    {
+        let known: std::collections::HashSet<&str> =
+            groups.iter().map(|g| g.name.as_str()).collect();
+        let mut inferred: Vec<String> = Vec::new();
+        let mut seen_inferred: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for s in &cfg.steps {
+            if let Some(g) = &s.group {
+                if !known.contains(g.as_str()) && seen_inferred.insert(g.clone()) {
+                    inferred.push(g.clone());
+                }
+            }
+        }
+        for g in inferred {
+            groups.push(GroupMetaDto {
+                name: g,
+                description: None,
+                color: None,
+            });
+        }
+    }
     let job_state = JobState {
         job_id: job_id.clone(),
-        config_name,
+        config_name: config_name.clone(),
+        user: user.clone(),
+        debug,
         started_at: now,
         finished_at: None,
         status: JobStatus::Running,
         steps: steps_map,
         step_order,
+        groups,
         eta_seconds: None,
         job_pct: 0.0,
     };
@@ -93,6 +136,31 @@ pub async fn run_job(
 
     // Pool de conexiones declarado en el archivo de conexiones.
     let pool = Arc::new(ConnectionPool::new(connections));
+
+    // RunStore opcional: si la conexión `runs` no está declarada, seguimos
+    // sin persistencia (con warning).
+    let run_store = match crate::runs::RunStore::open(&pool).await {
+        Ok(opt) => opt.map(Arc::new),
+        Err(e) => {
+            tracing::warn!("could not initialize runs DB: {e:#}; history disabled");
+            None
+        }
+    };
+    if let Some(store) = &run_store {
+        if let Err(e) = store
+            .insert_run(
+                &job_id,
+                &config_name,
+                user.as_deref(),
+                debug,
+                now,
+                cfg.steps.len(),
+            )
+            .await
+        {
+            tracing::warn!("could not persist run header: {e}");
+        }
+    }
 
     let tables: TableStore = Arc::new(RwLock::new(HashMap::new()));
 
@@ -111,6 +179,9 @@ pub async fn run_job(
         state,
         broadcaster,
         cancel,
+        run_store,
+        job_id.clone(),
+        debug,
     ));
 
     Ok(handle)
@@ -124,6 +195,9 @@ async fn supervisor_and_scheduler(
     state: Arc<RwLock<JobState>>,
     broadcaster: broadcast::Sender<ProgressEvent>,
     cancel: CancellationToken,
+    run_store: Option<Arc<crate::runs::RunStore>>,
+    job_id_owned: String,
+    debug: bool,
 ) {
     let job_started = Instant::now();
     let dag = match Dag::build(&cfg.steps) {
@@ -203,6 +277,7 @@ async fn supervisor_and_scheduler(
 
         // Procesar updates
         let Some(msg) = rx.recv().await else { break };
+        let step_id_at_msg = msg.step_id.clone();
         match msg.update {
             StepUpdate::Started => {
                 set_step_state(
@@ -363,6 +438,63 @@ async fn supervisor_and_scheduler(
                 running_count = running_count.saturating_sub(1);
             }
         }
+
+        // Persistencia: si el step quedó en estado terminal, escribir su row
+        // en step_runs + logs en step_logs (+ dataset si debug).
+        if let Some(store) = &run_store {
+            let info_snap = {
+                let s = state.read().await;
+                s.steps.get(&step_id_at_msg).cloned()
+            };
+            if let Some(info) = info_snap {
+                if info.state.is_terminal() {
+                    let st = store.clone();
+                    let job_id = job_id_owned.clone();
+                    let logs_to_persist = info.logs.clone();
+                    let step_uid = info.step_uid;
+                    let step_id_s = info.id.clone();
+                    let kind = info.kind.clone();
+                    let group = info.group.clone();
+                    let state_clone = info.state.clone();
+
+                    if let Err(e) = st
+                        .upsert_step_run(
+                            &job_id,
+                            step_uid,
+                            &step_id_s,
+                            &kind,
+                            group.as_deref(),
+                            &state_clone,
+                        )
+                        .await
+                    {
+                        tracing::warn!("persist step_run failed for {step_id_s}: {e}");
+                    }
+                    if !logs_to_persist.is_empty() {
+                        if let Err(e) = st.append_logs(&job_id, step_uid, logs_to_persist).await {
+                            tracing::warn!("persist logs failed for {step_id_s}: {e}");
+                        }
+                    }
+                    if debug && matches!(info.state, StepRuntimeState::Done { .. }) {
+                        if let Some(table_name) = info.output_table.as_deref() {
+                            let maybe_df = {
+                                let t = tables.read().await;
+                                t.get(table_name).cloned()
+                            };
+                            if let Some(df) = maybe_df {
+                                if let Err(e) =
+                                    st.persist_dataset(&job_id, step_uid, df.as_ref()).await
+                                {
+                                    tracing::warn!(
+                                        "persist dataset failed for {step_id_s}: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Determinar status final
@@ -376,7 +508,16 @@ async fn supervisor_and_scheduler(
             JobStatus::Ok
         }
     };
-    mark_job_finished(&state, final_status, &broadcaster, job_started.elapsed().as_millis()).await;
+    let total_ms = job_started.elapsed().as_millis();
+    mark_job_finished(&state, final_status, &broadcaster, total_ms).await;
+    if let Some(store) = &run_store {
+        if let Err(e) = store
+            .finish_run(&job_id_owned, final_status, Utc::now(), total_ms)
+            .await
+        {
+            tracing::warn!("persist run finish failed: {e}");
+        }
+    }
 }
 
 async fn set_step_state(

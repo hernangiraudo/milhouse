@@ -6,6 +6,8 @@ import { listConfigs, listJobs, createJob } from "@/lib/api";
 import type { ConfigSummary, JobSummary } from "@/lib/types";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ConnectionsPanel } from "@/components/ConnectionsPanel";
+import { UserChip } from "@/components/LoginGate";
+import { useUser } from "@/lib/session";
 
 export default function Home() {
   const router = useRouter();
@@ -14,6 +16,8 @@ export default function Home() {
   const [selected, setSelected] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [debug, setDebug] = useState(false);
+  const user = useUser();
 
   async function reload() {
     try {
@@ -38,7 +42,7 @@ export default function Home() {
     setLoading(true);
     setErr(null);
     try {
-      const { job_id } = await createJob(selected);
+      const { job_id } = await createJob(selected, { user, debug });
       router.push(`/jobs/${job_id}`);
     } catch (e) {
       setErr(String(e));
@@ -56,7 +60,10 @@ export default function Home() {
             <span className="text-slate-400 text-2xl">ETL Manager</span>
           </h1>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-4">
+          <UserChip />
+          <ThemeToggle />
+        </div>
       </header>
 
       <section className="bg-panel rounded-xl p-6 mb-8 border border-slate-800">
@@ -81,6 +88,19 @@ export default function Home() {
           >
             {loading ? "Lanzando..." : "Run job"}
           </button>
+          <label className="flex items-center gap-2 text-sm text-muted cursor-pointer ml-2">
+            <input
+              type="checkbox"
+              checked={debug}
+              onChange={(e) => setDebug(e.target.checked)}
+            />
+            <span>
+              Debug
+              <span className="text-dim ml-1">
+                (persiste datasets resultantes en la DB de runs)
+              </span>
+            </span>
+          </label>
           {err && <span className="text-red-400 text-sm">{err}</span>}
         </div>
       </section>
@@ -95,6 +115,7 @@ export default function Home() {
               <tr>
                 <th className="text-left px-4 py-2">Job ID</th>
                 <th className="text-left px-4 py-2">Config</th>
+                <th className="text-left px-4 py-2">Usuario</th>
                 <th className="text-left px-4 py-2">Status</th>
                 <th className="text-left px-4 py-2">%</th>
                 <th className="text-left px-4 py-2">Inicio</th>
@@ -104,7 +125,7 @@ export default function Home() {
             <tbody>
               {jobs.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-slate-500 text-center">
+                  <td colSpan={7} className="px-4 py-6 text-slate-500 text-center">
                     No hay jobs todavía.
                   </td>
                 </tr>
@@ -115,6 +136,9 @@ export default function Home() {
                     {j.job_id.slice(0, 8)}
                   </td>
                   <td className="px-4 py-2">{j.config_name}</td>
+                  <td className="px-4 py-2 font-mono text-xs">
+                    {j.user ?? <span className="text-dim">—</span>}
+                  </td>
                   <td className="px-4 py-2">
                     <StatusBadge status={j.status} />
                   </td>

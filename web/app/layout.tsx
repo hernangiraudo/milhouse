@@ -1,4 +1,5 @@
 import "./globals.css";
+import { AppShell } from "@/components/AppShell";
 
 export const metadata = {
   title: "Milhouse — ETL Manager",
@@ -28,7 +29,9 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
-      <body>{children}</body>
+      <body>
+        <AppShell>{children}</AppShell>
+      </body>
     </html>
   );
 }

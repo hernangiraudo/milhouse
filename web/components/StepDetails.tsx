@@ -27,7 +27,7 @@ export function StepDetails({ info }: { info: StepInfo }) {
                 {info.depends_on.map((d) => (
                   <code
                     key={d}
-                    className="bg-slate-800 px-1.5 py-0.5 rounded text-xs"
+                    className="milhouse-chip"
                   >
                     {d}
                   </code>
@@ -328,7 +328,7 @@ function KindSpecific({
                   {select.map((c) => (
                     <code
                       key={c}
-                      className="bg-slate-800 px-1.5 py-0.5 rounded text-xs"
+                      className="milhouse-chip"
                     >
                       {c}
                     </code>

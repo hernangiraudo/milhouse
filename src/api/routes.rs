@@ -61,13 +61,37 @@ pub async fn create_job(
     let path = std::path::Path::new(&state.configs_dir).join(&req.config_name);
     let text = fs::read_to_string(&path)
         .map_err(|e| (StatusCode::NOT_FOUND, format!("config not found: {e}")))?;
-    let cfg = EtlConfig::from_json_str(&text)
+    let mut cfg = EtlConfig::from_json_str(&text)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid config: {e}")))?;
+    // Asignar step_uids faltantes y persistir el cambio en disco.
+    if cfg.ensure_step_uids() {
+        let new_text = serde_json::to_string_pretty(&cfg).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("re-serializing config: {e}"),
+            )
+        })?;
+        if let Err(e) = fs::write(&path, new_text) {
+            tracing::warn!(
+                "could not persist newly assigned step_uids back to {}: {e}",
+                path.display()
+            );
+        } else {
+            tracing::info!("assigned missing step_uids and saved {}", path.display());
+        }
+    }
     let connections = state.connections.read().await.clone();
     let job_id = Uuid::new_v4().to_string();
-    let handle = run_job(job_id.clone(), req.config_name.clone(), cfg, connections)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let handle = run_job(
+        job_id.clone(),
+        req.config_name.clone(),
+        req.user.clone(),
+        req.debug,
+        cfg,
+        connections,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     state.jobs.insert(job_id.clone(), handle);
     Ok(Json(RunJobResp { job_id }))
 }
@@ -120,6 +144,7 @@ pub async fn list_jobs(State(state): State<AppState>) -> impl IntoResponse {
         out.push(JobSummary {
             job_id: snap.job_id.clone(),
             config_name: snap.config_name.clone(),
+            user: snap.user.clone(),
             status: snap.status,
             started_at: snap.started_at,
             finished_at: snap.finished_at,

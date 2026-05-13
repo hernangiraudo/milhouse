@@ -22,11 +22,18 @@ export async function listJobs(): Promise<JobSummary[]> {
   return r.json();
 }
 
-export async function createJob(configName: string): Promise<{ job_id: string }> {
+export async function createJob(
+  configName: string,
+  opts?: { user?: string | null; debug?: boolean },
+): Promise<{ job_id: string }> {
   const r = await fetch(`${API_BASE}/api/jobs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ config_name: configName }),
+    body: JSON.stringify({
+      config_name: configName,
+      user: opts?.user ?? null,
+      debug: opts?.debug ?? false,
+    }),
   });
   if (!r.ok) throw new Error(`createJob ${r.status} ${await r.text()}`);
   return r.json();

@@ -37,7 +37,8 @@
       "Bash(python -c ' *)",
       "PowerShell(Start-Process \"http://localhost:3000/jobs/feec4527-5bda-490a-963b-622aed9d7a2f\")",
       "Bash(break)",
-      "PowerShell(Start-Process \"http://localhost:3000/jobs/e99922e9-a5eb-4b8f-b1dd-262af9c0c44d\")"
+      "PowerShell(Start-Process \"http://localhost:3000/jobs/e99922e9-a5eb-4b8f-b1dd-262af9c0c44d\")",
+      "PowerShell(Start-Process \"http://localhost:3000/jobs/6c0bd9bd-33bc-45fc-bcbe-19ff5adc662f\")"
     ]
   }
 }

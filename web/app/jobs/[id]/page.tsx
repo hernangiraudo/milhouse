@@ -17,6 +17,7 @@ import { SamplePanel } from "@/components/SamplePanel";
 import { StepDetails } from "@/components/StepDetails";
 import { DagView } from "@/components/DagView";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { UserChip } from "@/components/LoginGate";
 
 type State = JobState | null;
 
@@ -173,6 +174,22 @@ export default function JobPage() {
           <div className="text-xs text-slate-500 mt-1">
             {wsOpen ? "● live" : "○ disconnected"} · status:{" "}
             <span className="text-slate-300">{state.status}</span>
+            {state.user && (
+              <>
+                {" "}· lanzado por{" "}
+                <code className="milhouse-chip" style={{ fontSize: "0.65rem" }}>
+                  {state.user}
+                </code>
+              </>
+            )}
+            {state.debug && (
+              <span
+                className="ml-2 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-amber-700"
+                style={{ color: "#f59e0b" }}
+              >
+                debug
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-4">
@@ -189,6 +206,7 @@ export default function JobPage() {
           >
             Cancelar
           </button>
+          <UserChip />
           <ThemeToggle />
         </div>
       </header>
@@ -214,6 +232,7 @@ export default function JobPage() {
           <StepColumns
             steps={state.steps}
             order={state.step_order}
+            groups={state.groups}
             selectedId={selectedStep}
             onSelect={setSelectedStep}
           />
@@ -221,6 +240,7 @@ export default function JobPage() {
           <DagView
             steps={state.steps}
             order={state.step_order}
+            groups={state.groups}
             selectedId={selectedStep}
             onSelect={setSelectedStep}
           />

@@ -358,3 +358,21 @@ body {
 .milhouse-logs-error {
   color: #f87171 !important; /* red-400 */
 }
+
+/* Chips inline (ej: lista "Depende de"). Tonos del panel-2 para que se vean
+   en ambos temas. */
+.milhouse-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.4rem;
+  border-radius: 0.25rem;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+:root[data-theme="light"] .milhouse-chip {
+  background: #e2e8f0; /* slate-200 — claro pero distinguible */
+  color: #0f172a;
+  border-color: #cbd5e1;
+}

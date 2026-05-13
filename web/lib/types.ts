@@ -56,20 +56,30 @@ export interface StepInfo {
   kind: string;
   depends_on: string[];
   output_table?: string | null;
+  group?: string | null;
   state: StepRuntimeState;
   logs: LogLine[];
   sample?: TableSample | null;
   spec: Record<string, unknown>;
 }
 
+export interface GroupMeta {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+}
+
 export interface JobState {
   job_id: string;
   config_name: string;
+  user?: string | null;
+  debug?: boolean;
   started_at: string;
   finished_at: string | null;
   status: JobStatus;
   steps: Record<string, StepInfo>;
   step_order: string[];
+  groups?: GroupMeta[];
   eta_seconds: number | null;
   job_pct: number;
 }
@@ -77,6 +87,7 @@ export interface JobState {
 export interface JobSummary {
   job_id: string;
   config_name: string;
+  user: string | null;
   status: JobStatus;
   started_at: string;
   finished_at: string | null;

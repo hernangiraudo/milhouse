@@ -41,10 +41,14 @@ impl StepRuntimeState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepInfo {
+    /// Identidad estable de máquina (asignada al cargar el config).
+    pub step_uid: u32,
     pub id: String,
     pub kind: String,
     pub depends_on: Vec<String>,
     pub output_table: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     pub state: StepRuntimeState,
     #[serde(default)]
     pub logs: Vec<LogLine>,
@@ -81,13 +85,29 @@ pub struct ColumnMeta {
 pub struct JobState {
     pub job_id: String,
     pub config_name: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub debug: bool,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub status: JobStatus,
     pub steps: HashMap<String, StepInfo>,
     pub step_order: Vec<String>,
+    /// Metadata de grupos declarados en el config (orden preservado).
+    #[serde(default)]
+    pub groups: Vec<GroupMetaDto>,
     pub eta_seconds: Option<u64>,
     pub job_pct: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMetaDto {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

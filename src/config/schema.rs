@@ -11,7 +11,22 @@ pub struct EtlConfig {
     /// Si está presente, se ignora con un warning en el log.
     #[serde(default)]
     pub duckdb_path: Option<String>,
+    /// Metadata opcional para los grupos referenciados por `Step.group`.
+    /// Cada grupo se infiere del set de valores `group` en los steps; esta
+    /// sección permite agregar `description` o `color` por grupo.
+    #[serde(default)]
+    pub groups: Vec<GroupMeta>,
     pub steps: Vec<Step>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMeta {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Color hex sugerido (opcional). Si no, la UI elige.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -20,9 +35,22 @@ fn default_version() -> u32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
+    /// Identidad estable de máquina. Se asigna automáticamente al cargar el
+    /// config la primera vez (si no está presente) y se persiste en el JSON.
+    /// Las dependencias en runtime se resuelven por uid: si el `id` legible
+    /// cambia, las referencias a sus runs históricos siguen funcionando.
+    #[serde(default)]
+    pub step_uid: Option<u32>,
+    /// Nombre legible (puede cambiar; el uid es la identidad estable).
     pub id: String,
+    /// Lista de dependencias declaradas por `id` legible (lo que el usuario
+    /// escribe en el JSON). En runtime se resuelven al `step_uid` correspondiente.
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Etiqueta de agrupación opcional. Steps con el mismo `group` se muestran
+    /// juntos en la UI (colapsables en el DAG, subsección en el Kanban).
+    #[serde(default)]
+    pub group: Option<String>,
     #[serde(flatten)]
     pub spec: StepSpec,
 }
@@ -242,6 +270,35 @@ impl EtlConfig {
         let cfg: Self = serde_json::from_str(s)?;
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Asigna `step_uid` a cada step que no tenga uno, usando como base
+    /// max(existing) + 1. Devuelve `true` si al menos uno fue asignado
+    /// (es decir, el archivo en disco debería re-escribirse).
+    pub fn ensure_step_uids(&mut self) -> bool {
+        let mut max_uid: u32 = self
+            .steps
+            .iter()
+            .filter_map(|s| s.step_uid)
+            .max()
+            .unwrap_or(0);
+        let mut changed = false;
+        for s in &mut self.steps {
+            if s.step_uid.is_none() {
+                max_uid = max_uid.saturating_add(1);
+                s.step_uid = Some(max_uid);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Mapa id legible → step_uid. Requiere `ensure_step_uids` antes.
+    pub fn id_to_uid(&self) -> std::collections::HashMap<String, u32> {
+        self.steps
+            .iter()
+            .filter_map(|s| s.step_uid.map(|u| (s.id.clone(), u)))
+            .collect()
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {

@@ -8,6 +8,12 @@
       "path": "data/demo.duckdb"
     },
     {
+      "name": "runs",
+      "description": "Historial de ejecuciones: tiempos, logs y datasets debug.",
+      "type": "duckdb",
+      "path": "data/milhouse_runs.duckdb"
+    },
+    {
       "name": "scratch",
       "description": "DuckDB en memoria para pruebas rápidas.",
       "type": "duckdb_memory"

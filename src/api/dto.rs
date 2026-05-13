@@ -9,6 +9,14 @@ pub struct ConfigSummary {
 #[derive(Debug, Deserialize)]
 pub struct RunJobReq {
     pub config_name: String,
+    /// Nombre del usuario que lanza el job (login simple sin password).
+    /// Se persiste en la tabla `runs` para auditoría.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Si true, persiste el dataset resultante de cada step en la DB de runs.
+    /// Aumenta tamaño en disco; pensado para sesiones de debug.
+    #[serde(default)]
+    pub debug: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -20,6 +28,7 @@ pub struct RunJobResp {
 pub struct JobSummary {
     pub job_id: String,
     pub config_name: String,
+    pub user: Option<String>,
     pub status: crate::orchestrator::state::JobStatus,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
