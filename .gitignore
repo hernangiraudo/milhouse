@@ -1,0 +1,12 @@
+/target
+/data/*.duckdb
+/data/*.duckdb.wal
+/data/exports/*
+!/data/exports/.gitkeep
+/data/timings.json
+/web/node_modules
+/web/.next
+/web/out
+.env
+.env.local
+*.log

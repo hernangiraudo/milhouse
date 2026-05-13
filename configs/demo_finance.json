@@ -1,0 +1,156 @@
+{
+  "name": "demo_finance",
+  "version": 1,
+  "duckdb_path": "data/demo.duckdb",
+  "steps": [
+    {
+      "id": "prepare_db",
+      "kind": "sql_exec",
+      "depends_on": [],
+      "query": "CREATE OR REPLACE TABLE tx_recent AS SELECT * FROM transactions WHERE CAST(timestamp AS TIMESTAMP) >= (CURRENT_TIMESTAMP::TIMESTAMP - INTERVAL 365 DAY); CREATE INDEX IF NOT EXISTS idx_tx_recent_account ON tx_recent(account_id);"
+    },
+    {
+      "id": "load_currencies",
+      "kind": "sql_query",
+      "depends_on": ["prepare_db"],
+      "query": "SELECT id AS currency_id, code, symbol, rate_to_usd FROM currencies",
+      "output_table": "currencies"
+    },
+    {
+      "id": "load_categories",
+      "kind": "sql_query",
+      "depends_on": ["prepare_db"],
+      "query": "SELECT id AS category_id, name AS category_name, parent_id FROM categories",
+      "output_table": "categories"
+    },
+    {
+      "id": "load_accounts",
+      "kind": "sql_query",
+      "depends_on": ["prepare_db"],
+      "query": "SELECT id AS account_id, owner_name, country AS account_country, currency_id AS account_currency_id, opened_at FROM accounts",
+      "output_table": "accounts"
+    },
+    {
+      "id": "load_transactions",
+      "kind": "sql_query",
+      "depends_on": ["prepare_db"],
+      "query": "SELECT tx_id, account_id, category_id, amount, currency_id, timestamp, country, status FROM tx_recent",
+      "output_table": "tx_raw"
+    },
+    {
+      "id": "join_tx_accounts",
+      "kind": "join",
+      "depends_on": ["load_transactions", "load_accounts"],
+      "left": "tx_raw",
+      "right": "accounts",
+      "left_on": ["account_id"],
+      "right_on": ["account_id"],
+      "how": "inner",
+      "output_table": "tx_with_account"
+    },
+    {
+      "id": "lookup_currency",
+      "kind": "lookup",
+      "depends_on": ["join_tx_accounts", "load_currencies"],
+      "input": "tx_with_account",
+      "master": "currencies",
+      "key": "currency_id",
+      "master_key": "currency_id",
+      "select": [
+        { "from": "code", "as": "currency_code" },
+        { "from": "rate_to_usd", "as": "currency_rate" }
+      ],
+      "output_table": "tx_with_currency"
+    },
+    {
+      "id": "lookup_categories",
+      "kind": "lookup",
+      "depends_on": ["lookup_currency", "load_categories"],
+      "input": "tx_with_currency",
+      "master": "categories",
+      "key": "category_id",
+      "master_key": "category_id",
+      "select": [
+        { "from": "category_name", "as": "category_name" }
+      ],
+      "output_table": "tx_enriched"
+    },
+    {
+      "id": "tx_date",
+      "kind": "transform",
+      "depends_on": ["lookup_categories"],
+      "input": "tx_enriched",
+      "operations": [
+        { "op": "to_date", "column": "timestamp", "format": "%Y-%m-%d %H:%M:%S%.f", "as": "date" },
+        { "op": "uppercase", "column": "country", "as": "country" },
+        { "op": "cast", "column": "amount", "to": "f64" }
+      ],
+      "output_table": "tx_typed"
+    },
+    {
+      "id": "filter_large_tx",
+      "kind": "filter_and_subset",
+      "depends_on": ["tx_date"],
+      "input": "tx_typed",
+      "filter": "amount > 1000 AND status == 'ok'",
+      "select": ["tx_id", "date", "amount", "account_id", "currency_code", "category_name", "country", "account_country"],
+      "output_table": "tx_large"
+    },
+    {
+      "id": "fraud_score_rhai",
+      "kind": "procedural",
+      "depends_on": ["tx_date"],
+      "input": "tx_typed",
+      "engine": "rhai",
+      "state_init": { "flagged": 0, "sum_amount": 0.0 },
+      "script": "state.sum_amount += row.amount; if row.amount > 5000.0 && row.country != row.account_country { state.flagged += 1; row.score_rhai = 0.9; row.flag_rhai = true; } else { row.score_rhai = 0.1; row.flag_rhai = false; } row",
+      "output_table": "tx_scored_rhai"
+    },
+    {
+      "id": "fraud_score_rust",
+      "kind": "procedural",
+      "depends_on": ["tx_date"],
+      "input": "tx_typed",
+      "engine": "rust",
+      "fn_name": "fraud_scoring_v1",
+      "params": { "threshold": 5000.0 },
+      "output_table": "tx_scored_rust"
+    },
+    {
+      "id": "sort_tx_large",
+      "kind": "sort",
+      "depends_on": ["filter_large_tx"],
+      "input": "tx_large",
+      "by": [
+        { "column": "date", "desc": false },
+        { "column": "amount", "desc": true }
+      ],
+      "output_table": "tx_large_sorted"
+    },
+    {
+      "id": "join_scores",
+      "kind": "join",
+      "depends_on": ["fraud_score_rhai", "fraud_score_rust"],
+      "left": "tx_scored_rhai",
+      "right": "tx_scored_rust",
+      "left_on": ["tx_id"],
+      "right_on": ["tx_id"],
+      "how": "inner",
+      "output_table": "tx_scores"
+    },
+    {
+      "id": "export_large_csv",
+      "kind": "export",
+      "depends_on": ["sort_tx_large"],
+      "input": "tx_large_sorted",
+      "target": { "kind": "file", "format": "csv", "path": "data/exports/tx_large_sorted.csv" }
+    },
+    {
+      "id": "export_scores_parquet",
+      "kind": "export",
+      "depends_on": ["join_scores"],
+      "input": "tx_scores",
+      "target": { "kind": "file", "format": "parquet", "path": "data/exports/tx_scores.parquet" }
+    }
+  ]
+}

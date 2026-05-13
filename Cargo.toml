@@ -1,0 +1,65 @@
+[package]
+name = "milhouse"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "milhouse"
+path = "src/main.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+futures = "0.3"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+polars = { version = "0.49", features = [
+    "lazy",
+    "csv",
+    "parquet",
+    "dtype-full",
+    "strings",
+    "temporal",
+    "json",
+    "rows",
+    "is_in",
+] }
+
+duckdb = { version = "1.1", features = ["bundled", "polars"] }
+
+rhai = { version = "1.20", features = ["sync"] }
+
+petgraph = "0.6"
+dashmap = "6"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+once_cell = "1"
+
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 16
+
+# Perfil dev acelerado: optimiza dependencias pesadas (polars/duckdb) sin LTO
+# para que ejecute razonablemente bien aun en modo no-release.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev]
+opt-level = 0
+debug = 1
+incremental = true

@@ -1,0 +1,360 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =====================================================================
+   Tokens semánticos. La paleta light/dark se elige por data-theme en <html>.
+===================================================================== */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #111827;
+  --panel-2: #0f172a;
+  --border: #1f2937;
+  --border-strong: #334155;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --accent: #22d3ee;
+  --accent-ink: #0b1020;
+  --scrollbar-track: #0f172a;
+  --scrollbar-thumb: #334155;
+  --shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+  --code-bg: rgba(0, 0, 0, 0.6);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f1f5f9; /* slate-100 — un poco más oscuro que blanco puro */
+  --panel: #ffffff;
+  --panel-2: #f8fafc; /* slate-50 */
+  --border: #cbd5e1; /* slate-300 — más visible que slate-200 */
+  --border-strong: #64748b; /* slate-500 */
+  --text: #020617; /* slate-950 — casi negro */
+  --text-muted: #1e293b; /* slate-800 */
+  --text-dim: #475569; /* slate-600 */
+  --accent: #0e7490; /* cyan-700 — más profundo */
+  --accent-ink: #ffffff;
+  --scrollbar-track: #e2e8f0;
+  --scrollbar-thumb: #64748b;
+  --shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.12),
+    0 1px 2px -1px rgba(15, 23, 42, 0.08);
+  --code-bg: #1e293b; /* code blocks siguen oscuros, mejor contraste */
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  height: 100%;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 6px;
+}
+
+/* Clases utilitarias semánticas */
+.bg-app {
+  background: var(--bg);
+}
+.bg-surface {
+  background: var(--panel);
+}
+.bg-surface-2 {
+  background: var(--panel-2);
+}
+.border-surface {
+  border-color: var(--border);
+}
+.border-surface-strong {
+  border-color: var(--border-strong);
+}
+.text-app {
+  color: var(--text);
+}
+.text-muted {
+  color: var(--text-muted);
+}
+.text-dim {
+  color: var(--text-dim);
+}
+.text-accent {
+  color: var(--accent);
+}
+.bg-accent-token {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* =====================================================================
+   Light mode overrides
+   Las clases Tailwind oscuras hardcodeadas en componentes (bg-panel,
+   text-slate-*, border-slate-*, bg-black/*, ring de colores) se
+   remapean acá para que el tema claro tenga buen contraste sin tener
+   que tocar cada componente.
+===================================================================== */
+:root[data-theme="light"] .bg-panel {
+  background: var(--panel) !important;
+  box-shadow: var(--shadow);
+}
+:root[data-theme="light"] .bg-panel2 {
+  background: var(--panel-2) !important;
+}
+:root[data-theme="light"] .border-slate-800,
+:root[data-theme="light"] .border-slate-700 {
+  border-color: var(--border) !important;
+}
+:root[data-theme="light"] .border-slate-600 {
+  border-color: var(--border-strong) !important;
+}
+:root[data-theme="light"] .text-slate-200,
+:root[data-theme="light"] .text-slate-300 {
+  color: var(--text) !important;
+}
+:root[data-theme="light"] .text-slate-400 {
+  color: var(--text-muted) !important;
+}
+:root[data-theme="light"] .text-slate-500 {
+  color: var(--text-dim) !important;
+}
+/* Code blocks: mantienen fondo oscuro pero más sólido */
+:root[data-theme="light"] .bg-black\/30,
+:root[data-theme="light"] .bg-black\/60 {
+  background: var(--code-bg) !important;
+  color: #e2e8f0 !important;
+}
+:root[data-theme="light"] .bg-black\/60 *,
+:root[data-theme="light"] .bg-black\/30 * {
+  color: #e2e8f0;
+}
+
+/* Background utilities con alpha (yellow-500/10 etc.) ⇒ versiones más sólidas */
+:root[data-theme="light"] .bg-yellow-500\/20 {
+  background: #fef3c7 !important; /* amber-100 */
+}
+:root[data-theme="light"] .bg-yellow-500\/10 {
+  background: #fffbeb !important; /* amber-50 */
+}
+:root[data-theme="light"] .bg-emerald-500\/20 {
+  background: #d1fae5 !important; /* emerald-100 */
+}
+:root[data-theme="light"] .bg-emerald-500\/10 {
+  background: #ecfdf5 !important; /* emerald-50 */
+}
+:root[data-theme="light"] .bg-red-500\/20 {
+  background: #fee2e2 !important; /* red-100 */
+}
+:root[data-theme="light"] .bg-red-500\/10 {
+  background: #fef2f2 !important; /* red-50 */
+}
+:root[data-theme="light"] .bg-slate-500\/20,
+:root[data-theme="light"] .bg-slate-500\/10 {
+  background: #f1f5f9 !important; /* slate-100 */
+}
+:root[data-theme="light"] .bg-cyan-500\/20 {
+  background: #cffafe !important; /* cyan-100 */
+}
+:root[data-theme="light"] .bg-amber-500\/20 {
+  background: #fef3c7 !important;
+}
+
+/* Texto de "tone" en columnas Kanban: usar tonos más profundos */
+:root[data-theme="light"] .text-yellow-300 {
+  color: #92400e !important; /* amber-800 */
+}
+:root[data-theme="light"] .text-yellow-400 {
+  color: #b45309 !important;
+}
+:root[data-theme="light"] .text-emerald-300 {
+  color: #065f46 !important; /* emerald-800 */
+}
+:root[data-theme="light"] .text-red-300,
+:root[data-theme="light"] .text-red-400 {
+  color: #991b1b !important;
+}
+:root[data-theme="light"] .text-cyan-300 {
+  color: #155e75 !important; /* cyan-800 */
+}
+:root[data-theme="light"] .text-amber-300 {
+  color: #92400e !important;
+}
+:root[data-theme="light"] .text-sky-300 {
+  color: #075985 !important;
+}
+:root[data-theme="light"] .text-violet-200,
+:root[data-theme="light"] .text-violet-300 {
+  color: #5b21b6 !important;
+}
+:root[data-theme="light"] .text-fuchsia-200,
+:root[data-theme="light"] .text-fuchsia-300 {
+  color: #86198f !important;
+}
+:root[data-theme="light"] .text-rose-200,
+:root[data-theme="light"] .text-rose-300,
+:root[data-theme="light"] .text-rose-400 {
+  color: #9f1239 !important;
+}
+:root[data-theme="light"] .text-lime-200,
+:root[data-theme="light"] .text-lime-300 {
+  color: #3f6212 !important;
+}
+:root[data-theme="light"] .text-teal-200,
+:root[data-theme="light"] .text-teal-300 {
+  color: #115e59 !important;
+}
+:root[data-theme="light"] .text-sky-200 {
+  color: #075985 !important;
+}
+:root[data-theme="light"] .text-orange-300 {
+  color: #9a3412 !important;
+}
+:root[data-theme="light"] .text-accent {
+  color: var(--accent) !important;
+}
+
+/* Bordes de colores (border-yellow-700, etc.) ⇒ versiones más oscuras y visibles */
+:root[data-theme="light"] .border-yellow-700 {
+  border-color: #b45309 !important;
+}
+:root[data-theme="light"] .border-emerald-700 {
+  border-color: #047857 !important;
+}
+:root[data-theme="light"] .border-red-700 {
+  border-color: #b91c1c !important;
+}
+:root[data-theme="light"] .border-cyan-700 {
+  border-color: #0e7490 !important;
+}
+:root[data-theme="light"] .border-amber-700 {
+  border-color: #b45309 !important;
+}
+
+/* Botón accent: en tema claro, fondo accent intenso + texto blanco
+   (la clase es bg-accent text-ink heredada del tema oscuro) */
+:root[data-theme="light"] .bg-accent {
+  background: var(--accent) !important;
+}
+:root[data-theme="light"] .text-ink {
+  color: var(--accent-ink) !important;
+}
+:root[data-theme="light"] .ring-accent {
+  --tw-ring-color: var(--accent) !important;
+}
+
+/* Bordes pulsantes / hover */
+:root[data-theme="light"] .hover\:border-accent:hover {
+  border-color: var(--accent) !important;
+}
+:root[data-theme="light"] .hover\:bg-slate-800:hover {
+  background: var(--panel-2) !important;
+}
+
+/* Botón rojo "Cancelar" */
+:root[data-theme="light"] .bg-red-500\/80 {
+  background: #dc2626 !important;
+}
+:root[data-theme="light"] .hover\:bg-red-500:hover {
+  background: #b91c1c !important;
+}
+
+/* Tablas en panel: head más distintivo */
+:root[data-theme="light"] thead.bg-panel2 {
+  background: #e2e8f0 !important;
+}
+
+/* Sticky table head en Sample */
+:root[data-theme="light"] .sticky.bg-panel2 {
+  background: #e2e8f0 !important;
+}
+
+/* Detalles colapsables (StepDetails JSON crudo) */
+:root[data-theme="light"] details.bg-black\/30 {
+  background: var(--panel-2) !important;
+}
+:root[data-theme="light"] details.bg-black\/30 .text-slate-300,
+:root[data-theme="light"] details.bg-black\/30 .text-slate-400 {
+  color: var(--text) !important;
+}
+
+/* =====================================================================
+   Code blocks: SIEMPRE fondo oscuro + texto claro, en ambos temas.
+   No usan tokens semánticos para asegurar contraste consistente.
+===================================================================== */
+.milhouse-codeblock {
+  background: #0f172a !important; /* slate-900 */
+  border: 1px solid #1e293b !important;
+  border-radius: 0.375rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.75rem; /* text-xs */
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 18rem;
+}
+.milhouse-codeblock code {
+  color: #e2e8f0 !important; /* slate-200 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: transparent !important;
+}
+.milhouse-codeblock-lang {
+  font-size: 0.625rem;
+  color: #94a3b8 !important; /* slate-400 */
+  margin-bottom: 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.milhouse-codeblock-details {
+  border: 1px solid var(--border) !important;
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.625rem;
+  background: var(--panel-2) !important;
+}
+.milhouse-codeblock-details summary {
+  font-size: 0.75rem;
+  color: var(--text-dim) !important;
+  cursor: pointer;
+  user-select: none;
+}
+.milhouse-codeblock-details[open] summary {
+  margin-bottom: 0.25rem;
+}
+
+/* Logs panel: fondo oscuro en ambos temas para consistencia "consola" */
+.milhouse-logs {
+  background: #0f172a !important;
+  border: 1px solid #1e293b !important;
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  height: 18rem;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.milhouse-logs-empty {
+  color: #64748b !important;
+}
+.milhouse-logs-time {
+  color: #64748b !important;
+}
+.milhouse-logs-info {
+  color: #e2e8f0 !important;
+}
+.milhouse-logs-warn {
+  color: #facc15 !important; /* yellow-400 */
+}
+.milhouse-logs-error {
+  color: #f87171 !important; /* red-400 */
+}
