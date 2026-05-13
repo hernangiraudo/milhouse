@@ -1,5 +1,5 @@
 {
-  "name": "demo_finance",
+  "name": "Demo financiero · scoring de fraude",
   "version": 1,
   "duckdb_path": "data/demo.duckdb",
   "groups": [
@@ -217,6 +217,8 @@
         "tx_date"
       ],
       "group": "score",
+      "log_level": "warn",
+      "dataset_name": "scoring_rhai_resultados",
       "kind": "procedural",
       "input": "tx_typed",
       "engine": "rhai",
@@ -236,6 +238,8 @@
         "tx_date"
       ],
       "group": "score",
+      "log_level": "error",
+      "dataset_name": "scoring_rust_resultados",
       "kind": "procedural",
       "input": "tx_typed",
       "engine": "rust",

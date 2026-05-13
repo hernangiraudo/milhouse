@@ -31,7 +31,7 @@ pub async fn run(
         let mut total_affected: usize = 0;
         for (i, stmt) in stmts.iter().enumerate() {
             let preview = preview(stmt);
-            reporter.log(format!("[{}/{}] {}", i + 1, total, preview), "info");
+            reporter.log(format!("[{}/{}] {}", i + 1, total, preview));
             let n = guard
                 .execute(stmt, [])
                 .with_context(|| format!("executing statement #{}: {preview}", i + 1))?;

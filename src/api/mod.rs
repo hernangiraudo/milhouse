@@ -2,8 +2,10 @@ pub mod dto;
 pub mod routes;
 pub mod ws;
 
-use crate::config::ConnectionsFile;
+use crate::config::{ConnectionsFile, UsersFile};
+use crate::engine::ConnectionPool;
 use crate::orchestrator::JobHandle;
+use crate::runs::RunStore;
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -14,4 +16,11 @@ pub struct AppState {
     pub configs_dir: String,
     pub connections_path: String,
     pub connections: Arc<RwLock<ConnectionsFile>>,
+    pub users_path: String,
+    pub users: Arc<RwLock<UsersFile>>,
+    /// Pool de conexiones compartido (incluye la conexión `runs`).
+    pub pool: Arc<ConnectionPool>,
+    /// Acceso de lectura al histórico de runs. None si la conexión `runs`
+    /// no está declarada en connections.json.
+    pub run_store: Arc<RwLock<Option<Arc<RunStore>>>>,
 }

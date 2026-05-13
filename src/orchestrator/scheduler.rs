@@ -4,7 +4,7 @@ use super::state::{
     ColumnMeta, GroupMetaDto, JobState, JobStatus, LogLine, StepInfo, StepRuntimeState,
     TableSample,
 };
-use crate::config::{ConnectionsFile, EtlConfig, Step};
+use crate::config::{EtlConfig, Step};
 use crate::engine::{execute_step, ConnectionPool, StepContext, TableStore};
 use anyhow::Result;
 use chrono::Utc;
@@ -42,7 +42,8 @@ pub async fn run_job(
     user: Option<String>,
     debug: bool,
     cfg: EtlConfig,
-    connections: ConnectionsFile,
+    pool: Arc<ConnectionPool>,
+    run_store: Option<Arc<crate::runs::RunStore>>,
 ) -> Result<JobHandle> {
     if let Some(path) = &cfg.duckdb_path {
         tracing::warn!(
@@ -112,6 +113,7 @@ pub async fn run_job(
     let job_state = JobState {
         job_id: job_id.clone(),
         config_name: config_name.clone(),
+        config_display_name: Some(cfg.name.clone()),
         user: user.clone(),
         debug,
         started_at: now,
@@ -134,23 +136,14 @@ pub async fn run_job(
         broadcaster: broadcaster.clone(),
     };
 
-    // Pool de conexiones declarado en el archivo de conexiones.
-    let pool = Arc::new(ConnectionPool::new(connections));
-
-    // RunStore opcional: si la conexión `runs` no está declarada, seguimos
-    // sin persistencia (con warning).
-    let run_store = match crate::runs::RunStore::open(&pool).await {
-        Ok(opt) => opt.map(Arc::new),
-        Err(e) => {
-            tracing::warn!("could not initialize runs DB: {e:#}; history disabled");
-            None
-        }
-    };
+    // El pool y run_store vienen del AppState (compartidos). Esto evita que
+    // múltiples conexiones DuckDB compitan por el mismo archivo .duckdb.
     if let Some(store) = &run_store {
         if let Err(e) = store
             .insert_run(
                 &job_id,
                 &config_name,
+                Some(cfg.name.as_str()),
                 user.as_deref(),
                 debug,
                 now,
@@ -259,7 +252,11 @@ async fn supervisor_and_scheduler(
 
         for sid in to_launch.drain(..) {
             let step = step_by_id.get(&sid).cloned().unwrap();
-            let reporter = ProgressReporter::new(sid.clone(), tx.clone());
+            let reporter = ProgressReporter::new(
+                sid.clone(),
+                step.log_level.as_str().to_string(),
+                tx.clone(),
+            );
             let ctx = StepContext {
                 tables: tables.clone(),
                 connections: connections.clone(),
@@ -482,8 +479,22 @@ async fn supervisor_and_scheduler(
                                 t.get(table_name).cloned()
                             };
                             if let Some(df) = maybe_df {
-                                if let Err(e) =
-                                    st.persist_dataset(&job_id, step_uid, df.as_ref()).await
+                                // Resolver nombre + nivel desde el config.
+                                let step_def = cfg
+                                    .steps
+                                    .iter()
+                                    .find(|s| s.id == step_id_s);
+                                let ds_name = step_def
+                                    .and_then(|s| s.dataset_name.clone())
+                                    .unwrap_or_else(|| step_id_s.clone());
+                                let ds_level = step_def
+                                    .map(|s| s.log_level.as_str().to_string())
+                                    .unwrap_or_else(|| "info".to_string());
+                                if let Err(e) = st
+                                    .persist_dataset(
+                                        &job_id, step_uid, &ds_name, &ds_level, df.as_ref(),
+                                    )
+                                    .await
                                 {
                                     tracing::warn!(
                                         "persist dataset failed for {step_id_s}: {e}"

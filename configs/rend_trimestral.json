@@ -1,0 +1,20 @@
+{
+  "name": "Rendimiento Trimestral",
+  "version": 1,
+  "steps": [
+    {
+      "id": "load_quarter",
+      "kind": "sql_query",
+      "depends_on": [],
+      "query": "SELECT account_id, EXTRACT(QUARTER FROM CAST(timestamp AS TIMESTAMP)) AS quarter, EXTRACT(YEAR FROM CAST(timestamp AS TIMESTAMP)) AS year, SUM(amount) AS total FROM transactions GROUP BY account_id, year, quarter ORDER BY year DESC, quarter DESC",
+      "output_table": "tx_quarter"
+    },
+    {
+      "id": "export_quarter",
+      "kind": "export",
+      "depends_on": ["load_quarter"],
+      "input": "tx_quarter",
+      "target": { "kind": "file", "format": "parquet", "path": "data/exports/rend_trimestral.parquet" }
+    }
+  ]
+}

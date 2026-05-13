@@ -1,8 +1,10 @@
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use dashmap::DashMap;
 use milhouse::api::{routes, ws, AppState};
-use milhouse::config::ConnectionsFile;
+use milhouse::config::{ConnectionsFile, UsersFile};
+use milhouse::engine::ConnectionPool;
+use milhouse::runs::RunStore;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -21,18 +23,38 @@ async fn main() -> anyhow::Result<()> {
     let configs_dir = std::env::var("MILHOUSE_CONFIGS_DIR").unwrap_or_else(|_| "configs".into());
     let connections_path = std::env::var("MILHOUSE_CONNECTIONS_PATH")
         .unwrap_or_else(|_| "configs/connections.json".into());
+    let users_path =
+        std::env::var("MILHOUSE_USERS_PATH").unwrap_or_else(|_| "configs/users.json".into());
 
-    // Cargar conexiones al inicio. Si el archivo no existe, arrancamos con una
-    // lista vacía y registramos un warning: el usuario podrá crearla y recargar
-    // con POST /api/connections/reload.
     let connections = load_connections_or_warn(&connections_path);
+    let users = load_users_or_warn(&users_path);
+
+    // Pool compartido del servidor (los jobs harán su propio pool actualizado
+    // a partir de connections; pero compartimos uno solo para acceso de
+    // lectura desde la API de revisión).
+    let pool = Arc::new(ConnectionPool::new(connections.clone()));
+    let run_store_opt: Option<Arc<RunStore>> = match RunStore::open(&pool).await {
+        Ok(opt) => opt.map(Arc::new),
+        Err(e) => {
+            tracing::warn!("could not initialize runs DB at startup: {e:#}");
+            None
+        }
+    };
 
     let state = AppState {
         jobs: Arc::new(DashMap::new()),
         configs_dir,
         connections_path: connections_path.clone(),
         connections: Arc::new(RwLock::new(connections)),
+        users_path: users_path.clone(),
+        users: Arc::new(RwLock::new(users)),
+        pool,
+        run_store: Arc::new(RwLock::new(run_store_opt)),
     };
+
+    // Worker que dispara schedules cada minuto (puede correr siempre; chequea
+    // el run_store en cada tick).
+    milhouse::runs::worker::spawn(state.clone());
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -48,10 +70,57 @@ async fn main() -> anyhow::Result<()> {
             "/api/connections/reload",
             post(routes::reload_connections),
         )
+        .route(
+            "/api/users",
+            get(routes::list_users).post(routes::create_user),
+        )
+        .route("/api/users/:name", delete(routes::delete_user))
+        .route("/api/users/reload", post(routes::reload_users))
         .route("/api/jobs", get(routes::list_jobs).post(routes::create_job))
         .route("/api/jobs/:id", get(routes::get_job))
         .route("/api/jobs/:id/cancel", post(routes::cancel_job))
         .route("/api/jobs/:id/ws", get(ws::ws_handler))
+        // Histórico desde la DB de runs
+        .route("/api/runs", get(routes::list_run_history))
+        .route("/api/runs/:id", delete(routes::delete_run))
+        .route("/api/runs/:id/steps", get(routes::list_run_steps))
+        .route(
+            "/api/runs/:id/steps/:uid/logs",
+            get(routes::list_run_logs),
+        )
+        .route("/api/runs/:id/datasets", get(routes::list_run_datasets))
+        .route(
+            "/api/runs/:id/datasets/:uid/preview",
+            get(routes::dataset_preview),
+        )
+        .route(
+            "/api/runs/:id/datasets/:uid/export",
+            get(routes::export_dataset),
+        )
+        // Casos
+        .route(
+            "/api/cases",
+            get(routes::list_cases).post(routes::create_case),
+        )
+        .route("/api/cases/:id", get(routes::get_case))
+        .route("/api/cases/:id/close", post(routes::close_case))
+        .route(
+            "/api/cases/:id/comments",
+            post(routes::add_comment),
+        )
+        .route(
+            "/api/cases/:id/datasets",
+            post(routes::attach_dataset),
+        )
+        // Schedules
+        .route(
+            "/api/schedules",
+            get(routes::list_schedules).post(routes::create_schedule),
+        )
+        .route(
+            "/api/schedules/:id",
+            delete(routes::delete_schedule).patch(routes::patch_schedule),
+        )
         .with_state(state)
         .layer(cors);
 
@@ -94,6 +163,26 @@ fn load_connections_or_warn(path: &str) -> ConnectionsFile {
                 default: None,
                 connections: Vec::new(),
             }
+        }
+    }
+}
+
+fn load_users_or_warn(path: &str) -> UsersFile {
+    let p = PathBuf::from(path);
+    match std::fs::read_to_string(&p) {
+        Ok(text) => match UsersFile::from_json_str(&text) {
+            Ok(f) => {
+                tracing::info!("loaded {} user(s) from {}", f.users.len(), p.display());
+                f
+            }
+            Err(e) => {
+                tracing::error!("failed to parse {}: {e}", p.display());
+                UsersFile::empty()
+            }
+        },
+        Err(_) => {
+            tracing::warn!("users file {} not found; starting empty", p.display());
+            UsersFile::empty()
         }
     }
 }

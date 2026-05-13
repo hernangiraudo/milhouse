@@ -5,6 +5,7 @@ export type JobStatus = "running" | "ok" | "failed" | "cancelled";
 export interface ConfigSummary {
   name: string;
   path: string;
+  display_name: string;
 }
 
 export interface ColumnMeta {
@@ -72,6 +73,7 @@ export interface GroupMeta {
 export interface JobState {
   job_id: string;
   config_name: string;
+  config_display_name?: string | null;
   user?: string | null;
   debug?: boolean;
   started_at: string;
@@ -87,6 +89,7 @@ export interface JobState {
 export interface JobSummary {
   job_id: string;
   config_name: string;
+  config_display_name: string | null;
   user: string | null;
   status: JobStatus;
   started_at: string;

@@ -359,6 +359,32 @@ body {
   color: #f87171 !important; /* red-400 */
 }
 
+/* Form fields (inputs, selects, textareas) con colores semánticos.
+   Garantiza buen contraste en ambos temas. */
+.milhouse-field {
+  background: var(--panel-2) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  outline: none;
+}
+.milhouse-field:focus {
+  border-color: var(--accent) !important;
+}
+.milhouse-field::placeholder {
+  color: var(--text-dim) !important;
+  opacity: 1;
+}
+:root[data-theme="light"] .milhouse-field {
+  background: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+:root[data-theme="light"] .milhouse-field option {
+  background: #ffffff;
+  color: var(--text);
+}
+
 /* Chips inline (ej: lista "Depende de"). Tonos del panel-2 para que se vean
    en ambos temas. */
 .milhouse-chip {

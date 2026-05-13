@@ -4,6 +4,7 @@
 /data/exports/*
 !/data/exports/.gitkeep
 /data/timings.json
+/data/run/
 /web/node_modules
 /web/.next
 /web/out

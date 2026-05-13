@@ -1,0 +1,34 @@
+{
+  "name": "Carga de Warehouse",
+  "version": 1,
+  "groups": [
+    { "name": "prepare", "description": "Materialización en la base." },
+    { "name": "ingest",  "description": "Carga de tablas dimensiones y hechos." },
+    { "name": "export",  "description": "Bajada a Parquet." }
+  ],
+  "steps": [
+    {
+      "id": "prepare_warehouse",
+      "kind": "sql_exec",
+      "group": "prepare",
+      "depends_on": [],
+      "query": "CREATE OR REPLACE TABLE wh_tx_summary AS SELECT account_id, COUNT(*) AS tx_count, SUM(amount) AS amount_total, MIN(timestamp) AS first_tx, MAX(timestamp) AS last_tx FROM transactions GROUP BY account_id;"
+    },
+    {
+      "id": "load_summary",
+      "kind": "sql_query",
+      "group": "ingest",
+      "depends_on": ["prepare_warehouse"],
+      "query": "SELECT * FROM wh_tx_summary",
+      "output_table": "wh_summary"
+    },
+    {
+      "id": "export_parquet",
+      "kind": "export",
+      "group": "export",
+      "depends_on": ["load_summary"],
+      "input": "wh_summary",
+      "target": { "kind": "file", "format": "parquet", "path": "data/exports/warehouse_summary.parquet" }
+    }
+  ]
+}

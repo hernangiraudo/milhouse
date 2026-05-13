@@ -1,0 +1,37 @@
+{
+  "name": "Rendimiento Especie - Cuenta Corriente",
+  "version": 1,
+  "groups": [
+    { "name": "ingest", "description": "Movimientos de cuenta corriente." },
+    { "name": "transform", "description": "Conversión y filtrado." }
+  ],
+  "steps": [
+    {
+      "id": "load_tx",
+      "kind": "sql_query",
+      "group": "ingest",
+      "depends_on": [],
+      "query": "SELECT tx_id, account_id, amount, currency_id, timestamp, status FROM transactions WHERE status = 'ok'",
+      "output_table": "tx_cc"
+    },
+    {
+      "id": "cast_amount",
+      "kind": "transform",
+      "group": "transform",
+      "depends_on": ["load_tx"],
+      "input": "tx_cc",
+      "operations": [
+        { "op": "cast", "column": "amount", "to": "f64" },
+        { "op": "to_date", "column": "timestamp", "format": "%Y-%m-%d %H:%M:%S%.f", "as": "date" }
+      ],
+      "output_table": "tx_cc_typed"
+    },
+    {
+      "id": "export_cc",
+      "kind": "export",
+      "depends_on": ["cast_amount"],
+      "input": "tx_cc_typed",
+      "target": { "kind": "file", "format": "csv", "path": "data/exports/rend_especie_cc.csv" }
+    }
+  ]
+}

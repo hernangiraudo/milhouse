@@ -77,15 +77,25 @@ pub struct StepUpdateMsg {
 #[derive(Clone)]
 pub struct ProgressReporter {
     step_id: String,
+    /// Nivel de log default emitido por este step (definido en el config).
+    /// Cuando alguien llama `log()` sin nivel explícito, se usa éste.
+    default_level: String,
     tx: mpsc::Sender<StepUpdateMsg>,
 }
 
 impl ProgressReporter {
-    pub fn new(step_id: String, tx: mpsc::Sender<StepUpdateMsg>) -> Self {
-        Self { step_id, tx }
+    pub fn new(step_id: String, default_level: String, tx: mpsc::Sender<StepUpdateMsg>) -> Self {
+        Self {
+            step_id,
+            default_level,
+            tx,
+        }
     }
     pub fn step_id(&self) -> &str {
         &self.step_id
+    }
+    pub fn default_level(&self) -> &str {
+        &self.default_level
     }
     pub fn started(&self) {
         let _ = self.tx.try_send(StepUpdateMsg {
@@ -103,7 +113,13 @@ impl ProgressReporter {
             },
         });
     }
-    pub fn log(&self, line: String, level: &str) {
+    /// Emite un log usando el nivel default del step (definido en el config).
+    pub fn log(&self, line: String) {
+        self.log_with(line, &self.default_level);
+    }
+    /// Emite un log con un nivel explícito (override). Usar `log()` salvo
+    /// que sea un error real (donde se fuerza `"error"`).
+    pub fn log_with(&self, line: String, level: &str) {
         let _ = self.tx.try_send(StepUpdateMsg {
             step_id: self.step_id.clone(),
             update: StepUpdate::Log {

@@ -85,6 +85,9 @@ pub struct ColumnMeta {
 pub struct JobState {
     pub job_id: String,
     pub config_name: String,
+    /// Nombre legible del config (campo `name` dentro del JSON).
+    #[serde(default)]
+    pub config_display_name: Option<String>,
     #[serde(default)]
     pub user: Option<String>,
     #[serde(default)]

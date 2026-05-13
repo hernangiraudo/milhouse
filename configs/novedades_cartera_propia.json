@@ -1,0 +1,31 @@
+{
+  "name": "Novedades Cartera Propia",
+  "version": 1,
+  "steps": [
+    {
+      "id": "load_local_accounts",
+      "kind": "sql_query",
+      "depends_on": [],
+      "query": "SELECT id AS account_id, owner_name, country, currency_id FROM accounts WHERE country = 'AR'",
+      "output_table": "accounts_ar"
+    },
+    {
+      "id": "load_tx_30d",
+      "kind": "sql_query",
+      "depends_on": [],
+      "query": "SELECT tx_id, account_id, amount, currency_id, timestamp FROM transactions WHERE CAST(timestamp AS TIMESTAMP) >= (CURRENT_TIMESTAMP::TIMESTAMP - INTERVAL 30 DAY)",
+      "output_table": "tx_30d"
+    },
+    {
+      "id": "join_cartera",
+      "kind": "join",
+      "depends_on": ["load_local_accounts", "load_tx_30d"],
+      "left": "accounts_ar",
+      "right": "tx_30d",
+      "left_on": ["account_id"],
+      "right_on": ["account_id"],
+      "how": "inner",
+      "output_table": "cartera_propia_movs"
+    }
+  ]
+}

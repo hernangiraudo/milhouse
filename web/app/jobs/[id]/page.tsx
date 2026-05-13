@@ -165,8 +165,8 @@ export default function JobPage() {
           <a href="/" className="text-accent hover:underline text-sm">
             ← jobs
           </a>
-          <h1 className="text-2xl font-bold mt-1">
-            {state.config_name}{" "}
+          <h1 className="text-2xl font-bold mt-1" title={state.config_name}>
+            {state.config_display_name ?? state.config_name}{" "}
             <span className="text-slate-500 font-mono text-base">
               · {state.job_id.slice(0, 8)}
             </span>

@@ -1849,7 +1849,7 @@ dependencies = [
  "serde_json",
  "tar",
  "vcpkg",
- "zip",
+ "zip 6.0.0",
 ]
 
 [[package]]
@@ -1962,6 +1962,7 @@ dependencies = [
  "polars",
  "rand 0.8.6",
  "rhai",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3244,6 +3245,15 @@ dependencies = [
  "serde",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "rust_xlsxwriter"
+version = "0.79.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c743cb9f2a4524676020e26ee5f298445a82d882b09956811b1e78ca7e42b440"
+dependencies = [
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -4877,6 +4887,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "zip"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "displaydoc",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "thiserror 2.0.18",
+ "zopfli",
 ]
 
 [[package]]

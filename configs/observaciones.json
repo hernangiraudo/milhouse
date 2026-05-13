@@ -1,0 +1,30 @@
+{
+  "name": "Observaciones",
+  "version": 1,
+  "steps": [
+    {
+      "id": "load_pending",
+      "kind": "sql_query",
+      "depends_on": [],
+      "query": "SELECT tx_id, account_id, amount, status, timestamp FROM transactions WHERE status = 'pending'",
+      "log_level": "warn",
+      "output_table": "tx_pending"
+    },
+    {
+      "id": "load_negative",
+      "kind": "sql_query",
+      "depends_on": [],
+      "query": "SELECT tx_id, account_id, amount FROM transactions WHERE amount < 0",
+      "log_level": "info",
+      "output_table": "tx_negative"
+    },
+    {
+      "id": "sort_pending",
+      "kind": "sort",
+      "depends_on": ["load_pending"],
+      "input": "tx_pending",
+      "by": [{ "column": "timestamp", "desc": true }],
+      "output_table": "tx_obs"
+    }
+  ]
+}

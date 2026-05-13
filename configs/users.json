@@ -1,0 +1,39 @@
+{
+  "users": [
+    {
+      "name": "hernan",
+      "email": null,
+      "role": "admin"
+    },
+    {
+      "name": "dario",
+      "email": null,
+      "role": "admin"
+    },
+    {
+      "name": "eka",
+      "email": null,
+      "role": "usuaria"
+    },
+    {
+      "name": "azul",
+      "email": null,
+      "role": "usuaria"
+    },
+    {
+      "name": "martin",
+      "email": null,
+      "role": "usuario"
+    },
+    {
+      "name": "corina",
+      "email": null,
+      "role": "usuaria"
+    },
+    {
+      "name": "sandra",
+      "email": null,
+      "role": "usuaria"
+    }
+  ]
+}

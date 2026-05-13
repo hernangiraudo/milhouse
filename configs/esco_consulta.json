@@ -1,0 +1,34 @@
+{
+  "name": "Esco Consulta",
+  "version": 1,
+  "groups": [
+    { "name": "ingest", "description": "Carga de datos desde la base operativa." },
+    { "name": "export", "description": "Resultado a archivo." }
+  ],
+  "steps": [
+    {
+      "id": "load_currencies",
+      "kind": "sql_query",
+      "group": "ingest",
+      "depends_on": [],
+      "query": "SELECT id AS currency_id, code, symbol, rate_to_usd FROM currencies",
+      "output_table": "currencies"
+    },
+    {
+      "id": "load_accounts",
+      "kind": "sql_query",
+      "group": "ingest",
+      "depends_on": [],
+      "query": "SELECT id AS account_id, owner_name, country, currency_id, opened_at FROM accounts",
+      "output_table": "accounts"
+    },
+    {
+      "id": "export_consulta",
+      "kind": "export",
+      "group": "export",
+      "depends_on": ["load_accounts"],
+      "input": "accounts",
+      "target": { "kind": "file", "format": "csv", "path": "data/exports/esco_consulta.csv" }
+    }
+  ]
+}

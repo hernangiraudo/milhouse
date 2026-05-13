@@ -51,8 +51,38 @@ pub struct Step {
     /// juntos en la UI (colapsables en el DAG, subsección en el Kanban).
     #[serde(default)]
     pub group: Option<String>,
+    /// Nivel de log con el que se emiten TODOS los mensajes informativos
+    /// de este step (default: info). Los errores reales del motor quedan
+    /// siempre en `error`, independientemente de este valor.
+    #[serde(default)]
+    pub log_level: LogLevel,
+    /// Nombre "de fantasía" del dataset persistido cuando se ejecuta en debug.
+    /// Solo es etiqueta para la UI; el nombre real de la tabla en la DB de
+    /// runs sigue siendo `log_<job>_<step_uid>`. Si no se especifica, se usa
+    /// el `output_table` del step.
+    #[serde(default)]
+    pub dataset_name: Option<String>,
     #[serde(flatten)]
     pub spec: StepSpec,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    #[default]
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

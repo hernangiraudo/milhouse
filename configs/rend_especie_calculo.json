@@ -1,0 +1,32 @@
+{
+  "name": "Rendimiento Especie - Cálculo",
+  "version": 1,
+  "steps": [
+    {
+      "id": "load_tx",
+      "kind": "sql_query",
+      "depends_on": [],
+      "query": "SELECT tx_id, account_id, amount, currency_id FROM transactions",
+      "output_table": "tx"
+    },
+    {
+      "id": "filter_positive",
+      "kind": "filter_and_subset",
+      "depends_on": ["load_tx"],
+      "input": "tx",
+      "filter": "amount > 0",
+      "select": ["tx_id", "account_id", "amount", "currency_id"],
+      "output_table": "tx_pos"
+    },
+    {
+      "id": "rendimiento",
+      "kind": "procedural",
+      "depends_on": ["filter_positive"],
+      "input": "tx_pos",
+      "engine": "rust",
+      "fn_name": "running_balance_v1",
+      "params": {},
+      "output_table": "tx_rendimiento"
+    }
+  ]
+}

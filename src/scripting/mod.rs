@@ -26,7 +26,7 @@ impl ProcCtx {
             .report_progress(pct.min(1.0), Some(processed), Some(self.total_rows));
     }
     pub fn log(&self, line: impl Into<String>) {
-        self.reporter.log(line.into(), "info");
+        self.reporter.log(line.into());
     }
 }
 

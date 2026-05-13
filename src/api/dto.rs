@@ -2,8 +2,12 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub struct ConfigSummary {
+    /// Nombre del archivo (lo que se pasa en `config_name` al POST /api/jobs).
     pub name: String,
     pub path: String,
+    /// Nombre legible declarado dentro del JSON (`EtlConfig.name`). Si no se
+    /// puede leer, queda igual a `name` (el filename) como fallback.
+    pub display_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +32,7 @@ pub struct RunJobResp {
 pub struct JobSummary {
     pub job_id: String,
     pub config_name: String,
+    pub config_display_name: Option<String>,
     pub user: Option<String>,
     pub status: crate::orchestrator::state::JobStatus,
     pub started_at: chrono::DateTime<chrono::Utc>,
