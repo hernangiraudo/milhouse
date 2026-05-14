@@ -25,6 +25,7 @@
       "host": "localhost",
       "port": 5432,
       "user": "analytics",
+      "password": null,
       "database": "warehouse"
     },
     {
@@ -40,6 +41,7 @@
       "host": "mssql.internal",
       "port": 1433,
       "user": "etl_reader",
+      "password": null,
       "database": "ERP"
     }
   ]

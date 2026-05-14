@@ -14,7 +14,9 @@ use crate::orchestrator::progress::ProgressReporter;
 use anyhow::Result;
 use polars::frame::DataFrame;
 
-pub use context::{ConnectionPool, StepContext, TableStore};
+pub use context::{
+    test_connection, ConnectionPool, OpenedConnection, StepContext, TableStore,
+};
 
 pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressReporter) -> Result<StepOutcome> {
     let outcome = match &step.spec {

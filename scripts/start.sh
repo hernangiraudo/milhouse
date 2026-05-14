@@ -27,7 +27,7 @@ fi
 
 mkdir -p data/run
 
-echo "==> Backend en http://localhost:8080"
+echo "==> Backend en http://localhost:8090"
 "$BACKEND" > data/run/backend.log 2>&1 &
 BACKEND_PID=$!
 echo "    PID: $BACKEND_PID · logs: data/run/backend.log"

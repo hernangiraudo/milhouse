@@ -1,4 +1,4 @@
-# Arranca backend (puerto 8080) y frontend (puerto 3000) en ventanas separadas.
+# Arranca backend (puerto 8090) y frontend (puerto 3000) en ventanas separadas.
 #
 #   .\scripts\start.ps1
 #
@@ -20,7 +20,7 @@ if (-not (Test-Path $webNodeModules)) {
     exit 1
 }
 
-Write-Host "==> Arrancando backend en http://localhost:8080" -ForegroundColor Cyan
+Write-Host "==> Arrancando backend en http://localhost:8090" -ForegroundColor Cyan
 Start-Process -FilePath "powershell.exe" `
     -ArgumentList "-NoExit", "-Command", "cd '$root'; .\target\debug\milhouse.exe"
 

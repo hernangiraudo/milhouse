@@ -31,7 +31,7 @@ corepack prepare pnpm@latest --activate
 cargo build --bin milhouse --bin seed
 cargo run --bin seed -- --rows 50000
 
-cargo run --bin milhouse        # http://localhost:8080
+cargo run --bin milhouse        # http://localhost:8090
 # en otra terminal:
 cd web
 corepack pnpm install

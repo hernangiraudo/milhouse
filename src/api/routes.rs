@@ -63,6 +63,164 @@ pub async fn get_config(
     Ok(Json(v))
 }
 
+/// Convierte un nombre amigable a un nombre de archivo seguro
+/// (ascii minúscula, espacios → _, sin caracteres raros).
+fn slugify_filename(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if ch == '_' || ch == '-' || ch == '.' {
+            out.push(ch);
+        } else if ch.is_whitespace() || ch == '/' || ch == '\\' {
+            out.push('_');
+        }
+    }
+    out
+}
+
+const FORBIDDEN_NAMES: &[&str] = &["connections.json", "users.json"];
+
+fn config_path_for(state: &AppState, name: &str) -> std::path::PathBuf {
+    std::path::Path::new(&state.configs_dir).join(name)
+}
+
+fn validate_filename(name: &str) -> Result<(), (StatusCode, String)> {
+    if name.is_empty() || !name.ends_with(".json") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "El nombre del archivo debe terminar en .json".into(),
+        ));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Nombre inválido (sin paths)".into(),
+        ));
+    }
+    if FORBIDDEN_NAMES.contains(&name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("`{name}` es un archivo reservado del sistema"),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpsertProjectReq {
+    /// Para create: nombre del archivo .json. Para edit (PUT): si se manda y
+    /// difiere del path, renombra el archivo.
+    #[serde(default)]
+    pub filename: Option<String>,
+    /// Contenido completo del proyecto. Se valida que parsee como EtlConfig.
+    pub config: serde_json::Value,
+}
+
+/// POST /api/configs - crear proyecto.
+pub async fn create_config(
+    State(state): State<AppState>,
+    Json(req): Json<UpsertProjectReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let filename = req
+        .filename
+        .clone()
+        .ok_or((StatusCode::BAD_REQUEST, "falta filename".into()))?;
+    validate_filename(&filename)?;
+    let path = config_path_for(&state, &filename);
+    if path.exists() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("`{filename}` ya existe"),
+        ));
+    }
+    // Validar parseo + asignar step_uids.
+    let text = serde_json::to_string_pretty(&req.config).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("config no serializable: {e}"),
+        )
+    })?;
+    let mut cfg = EtlConfig::from_json_str(&text)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("config inválido: {e}")))?;
+    cfg.ensure_step_uids();
+    let out_text = serde_json::to_string_pretty(&cfg).unwrap();
+    fs::write(&path, out_text).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write: {e}"),
+        )
+    })?;
+    Ok(Json(json!({ "status": "ok", "filename": filename })))
+}
+
+/// PUT /api/configs/:name - reemplaza el contenido. Si `filename` viene en el
+/// body y difiere de `name`, renombra el archivo.
+pub async fn update_config(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<UpsertProjectReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    validate_filename(&name)?;
+    let old_path = config_path_for(&state, &name);
+    if !old_path.exists() {
+        return Err((StatusCode::NOT_FOUND, format!("`{name}` no existe")));
+    }
+    let target_name = req.filename.unwrap_or_else(|| name.clone());
+    validate_filename(&target_name)?;
+    let new_path = config_path_for(&state, &target_name);
+    if target_name != name && new_path.exists() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("`{target_name}` ya existe"),
+        ));
+    }
+    let text = serde_json::to_string_pretty(&req.config).map_err(|e| {
+        (StatusCode::BAD_REQUEST, format!("no serializable: {e}"))
+    })?;
+    let mut cfg = EtlConfig::from_json_str(&text)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("config inválido: {e}")))?;
+    cfg.ensure_step_uids();
+    let out_text = serde_json::to_string_pretty(&cfg).unwrap();
+    fs::write(&new_path, out_text).map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}"))
+    })?;
+    if target_name != name {
+        let _ = fs::remove_file(&old_path);
+    }
+    Ok(Json(json!({ "status": "ok", "filename": target_name })))
+}
+
+/// DELETE /api/configs/:name - borra el JSON del proyecto.
+pub async fn delete_config(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_filename(&name)?;
+    let path = config_path_for(&state, &name);
+    if !path.exists() {
+        return Err((StatusCode::NOT_FOUND, format!("`{name}` no existe")));
+    }
+    fs::remove_file(&path).map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("delete: {e}"))
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /api/configs/slug?from=Mi+Proyecto → { filename: "mi_proyecto.json" }
+/// Útil para sugerir un filename al crear desde la UI sin que el usuario lo tipee.
+#[derive(serde::Deserialize)]
+pub struct SlugifyQuery {
+    pub from: String,
+}
+pub async fn slugify_endpoint(
+    axum::extract::Query(q): axum::extract::Query<SlugifyQuery>,
+) -> Json<Value> {
+    let s = slugify_filename(&q.from);
+    let s = if s.is_empty() { "proyecto".to_string() } else { s };
+    Json(json!({ "filename": format!("{s}.json") }))
+}
+
 pub async fn create_job(
     State(state): State<AppState>,
     Json(req): Json<RunJobReq>,
@@ -186,8 +344,181 @@ pub async fn reload_connections(
     let parsed = ConnectionsFile::from_json_str(&text)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid connections: {e}")))?;
     let count = parsed.connections.len();
-    *state.connections.write().await = parsed;
+    *state.connections.write().await = parsed.clone();
+    // El ConnectionPool del AppState es Arc<...> compartido; los jobs nuevos
+    // lo usarán; los que están corriendo siguen con conexiones cacheadas.
+    // Como no podemos mutar el pool in-place, dejamos esto como limitación
+    // documentada: para que un cambio realmente se propague a sql_query con
+    // conexiones nuevas, hay que reiniciar el server. Reload solo afecta el
+    // listado API (lo que ve la UI).
     Ok(Json(json!({ "status": "ok", "connections": count })))
+}
+
+// ---------------------------------------------------------------------
+// Connections CRUD + test
+// ---------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct CreateConnectionReq {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Connection spec con flatten: { "type": "duckdb", "path": "..." }, etc.
+    pub spec: serde_json::Value,
+    #[serde(default)]
+    pub make_default: bool,
+}
+
+async fn persist_connections(
+    state: &AppState,
+    file: &ConnectionsFile,
+) -> Result<(), (StatusCode, String)> {
+    file.validate()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))?;
+    let txt = serde_json::to_string_pretty(file).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("serialize: {e}"),
+        )
+    })?;
+    fs::write(&state.connections_path, txt).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write connections file: {e}"),
+        )
+    })?;
+    Ok(())
+}
+
+fn parse_connection_payload(
+    name: &str,
+    description: Option<String>,
+    spec: &serde_json::Value,
+) -> Result<crate::config::Connection, (StatusCode, String)> {
+    // Reconstruimos el JSON completo para que serde respete el flatten:
+    // { "name", "description", ...spec }.
+    let mut merged = match spec {
+        serde_json::Value::Object(_) => spec.clone(),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "spec must be an object".into(),
+            ));
+        }
+    };
+    if let serde_json::Value::Object(map) = &mut merged {
+        map.insert("name".into(), serde_json::Value::String(name.to_string()));
+        if let Some(d) = description {
+            map.insert("description".into(), serde_json::Value::String(d));
+        }
+    }
+    serde_json::from_value::<crate::config::Connection>(merged).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid connection spec: {e}"),
+        )
+    })
+}
+
+pub async fn create_connection(
+    State(state): State<AppState>,
+    Json(req): Json<CreateConnectionReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let new_conn = parse_connection_payload(&req.name, req.description, &req.spec)?;
+    let mut file = state.connections.read().await.clone();
+    file.add(new_conn).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))?;
+    if req.make_default {
+        file.default = Some(req.name.clone());
+    }
+    persist_connections(&state, &file).await?;
+    *state.connections.write().await = file;
+    Ok(Json(json!({ "status": "ok", "name": req.name })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdateConnectionReq {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub spec: serde_json::Value,
+    #[serde(default)]
+    pub make_default: bool,
+}
+
+pub async fn update_connection(
+    State(state): State<AppState>,
+    Path(current_name): Path<String>,
+    Json(req): Json<UpdateConnectionReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let new_conn = parse_connection_payload(&req.name, req.description, &req.spec)?;
+    let mut file = state.connections.read().await.clone();
+    file.update(&current_name, new_conn)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))?;
+    if req.make_default {
+        file.default = Some(req.name.clone());
+    }
+    persist_connections(&state, &file).await?;
+    *state.connections.write().await = file;
+    Ok(Json(json!({ "status": "ok", "name": req.name })))
+}
+
+pub async fn delete_connection(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut file = state.connections.read().await.clone();
+    file.remove(&name)
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("{e}")))?;
+    persist_connections(&state, &file).await?;
+    *state.connections.write().await = file;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+pub struct TestConnectionReq {
+    /// Si se pasa, prueba esa conexión (no persistida). Si no, se prueba
+    /// la conexión con `name = path-param`.
+    #[serde(default)]
+    pub spec: Option<serde_json::Value>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+pub async fn test_connection_endpoint(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<TestConnectionReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    // Si vino spec en el body, usamos esa (probar antes de guardar).
+    // Si no, buscamos por nombre en el AppState.
+    let conn: crate::config::Connection = match req.spec {
+        Some(spec) => parse_connection_payload(
+            req.name.as_deref().unwrap_or(&name),
+            req.description,
+            &spec,
+        )?,
+        None => {
+            let file = state.connections.read().await.clone();
+            file.connections
+                .into_iter()
+                .find(|c| c.name == name)
+                .ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        format!("connection `{name}` not found"),
+                    )
+                })?
+        }
+    };
+    match crate::engine::test_connection(&conn).await {
+        Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
+        Err(e) => Ok(Json(json!({
+            "ok": false,
+            "error": format!("{e:#}")
+        }))),
+    }
 }
 
 pub async fn list_jobs(State(state): State<AppState>) -> impl IntoResponse {

@@ -321,7 +321,7 @@ Si falla algo, intentar manual:
 ```bash
 cargo build --bin milhouse --bin seed
 cargo run --bin seed --release -- --rows 50000   # solo primera vez
-cargo run --bin milhouse                          # http://localhost:8080
+cargo run --bin milhouse                          # http://localhost:8090
 cd web && corepack pnpm install && corepack pnpm dev   # http://localhost:3000
 ```
 

@@ -40,7 +40,8 @@
       "PowerShell(Start-Process \"http://localhost:3000/jobs/e99922e9-a5eb-4b8f-b1dd-262af9c0c44d\")",
       "PowerShell(Start-Process \"http://localhost:3000/jobs/6c0bd9bd-33bc-45fc-bcbe-19ff5adc662f\")",
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total:', len\\(d['rows']\\)\\)\")",
-      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total runs:', len\\(d['rows']\\)\\)\")"
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total runs:', len\\(d['rows']\\)\\)\")",
+      "PowerShell(Get-NetTCPConnection *)"
     ]
   }
 }

@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let bind = std::env::var("MILHOUSE_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    let bind = std::env::var("MILHOUSE_BIND").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let configs_dir = std::env::var("MILHOUSE_CONFIGS_DIR").unwrap_or_else(|_| "configs".into());
     let connections_path = std::env::var("MILHOUSE_CONNECTIONS_PATH")
         .unwrap_or_else(|_| "configs/connections.json".into());
@@ -63,12 +63,33 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/api/health", get(routes::health))
-        .route("/api/configs", get(routes::list_configs))
-        .route("/api/configs/:name", get(routes::get_config))
-        .route("/api/connections", get(routes::list_connections))
+        .route(
+            "/api/configs",
+            get(routes::list_configs).post(routes::create_config),
+        )
+        .route("/api/configs/slug", get(routes::slugify_endpoint))
+        .route(
+            "/api/configs/:name",
+            get(routes::get_config)
+                .put(routes::update_config)
+                .delete(routes::delete_config),
+        )
+        .route(
+            "/api/connections",
+            get(routes::list_connections).post(routes::create_connection),
+        )
         .route(
             "/api/connections/reload",
             post(routes::reload_connections),
+        )
+        .route(
+            "/api/connections/:name",
+            axum::routing::put(routes::update_connection)
+                .delete(routes::delete_connection),
+        )
+        .route(
+            "/api/connections/:name/test",
+            post(routes::test_connection_endpoint),
         )
         .route(
             "/api/users",

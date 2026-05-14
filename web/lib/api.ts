@@ -6,14 +6,72 @@ import type {
 } from "./types";
 
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
+  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8090";
 export const WS_BASE =
-  process.env.NEXT_PUBLIC_WS_BASE ?? "ws://localhost:8080";
+  process.env.NEXT_PUBLIC_WS_BASE ?? "ws://localhost:8090";
 
 export async function listConfigs(): Promise<ConfigSummary[]> {
   const r = await fetch(`${API_BASE}/api/configs`, { cache: "no-store" });
   if (!r.ok) throw new Error(`listConfigs ${r.status}`);
   return r.json();
+}
+
+export async function getConfig(name: string): Promise<Record<string, unknown>> {
+  const r = await fetch(
+    `${API_BASE}/api/configs/${encodeURIComponent(name)}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw new Error(`getConfig ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+export async function slugifyFilename(from: string): Promise<string> {
+  const r = await fetch(
+    `${API_BASE}/api/configs/slug?from=${encodeURIComponent(from)}`,
+  );
+  if (!r.ok) throw new Error(`slugify ${r.status}`);
+  const d = (await r.json()) as { filename: string };
+  return d.filename;
+}
+
+export async function createConfig(
+  filename: string,
+  config: Record<string, unknown>,
+): Promise<string> {
+  const r = await fetch(`${API_BASE}/api/configs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ filename, config }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  const d = (await r.json()) as { filename: string };
+  return d.filename;
+}
+
+export async function updateConfig(
+  currentName: string,
+  config: Record<string, unknown>,
+  newFilename?: string,
+): Promise<string> {
+  const r = await fetch(
+    `${API_BASE}/api/configs/${encodeURIComponent(currentName)}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filename: newFilename ?? currentName, config }),
+    },
+  );
+  if (!r.ok) throw new Error(await r.text());
+  const d = (await r.json()) as { filename: string };
+  return d.filename;
+}
+
+export async function deleteConfig(name: string): Promise<void> {
+  const r = await fetch(
+    `${API_BASE}/api/configs/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  if (!r.ok && r.status !== 204) throw new Error(await r.text());
 }
 
 export async function listJobs(): Promise<JobSummary[]> {
@@ -55,6 +113,64 @@ export async function reloadConnections(): Promise<void> {
     method: "POST",
   });
   if (!r.ok) throw new Error(`reloadConnections ${r.status}`);
+}
+
+export interface ConnectionPayload {
+  name: string;
+  description?: string | null;
+  /** El spec lleva `type` discriminador y los campos del tipo. */
+  spec: Record<string, unknown>;
+  make_default?: boolean;
+}
+export async function createConnection(p: ConnectionPayload): Promise<void> {
+  const r = await fetch(`${API_BASE}/api/connections`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(p),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+export async function updateConnection(
+  currentName: string,
+  p: ConnectionPayload,
+): Promise<void> {
+  const r = await fetch(
+    `${API_BASE}/api/connections/${encodeURIComponent(currentName)}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(p),
+    },
+  );
+  if (!r.ok) throw new Error(await r.text());
+}
+export async function deleteConnection(name: string): Promise<void> {
+  const r = await fetch(
+    `${API_BASE}/api/connections/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  if (!r.ok && r.status !== 204) throw new Error(await r.text());
+}
+export interface TestConnectionResult {
+  ok: boolean;
+  latency_ms?: number;
+  info?: string;
+  error?: string;
+}
+export async function testConnection(
+  name: string,
+  payload?: Partial<ConnectionPayload>,
+): Promise<TestConnectionResult> {
+  const r = await fetch(
+    `${API_BASE}/api/connections/${encodeURIComponent(name)}/test`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    },
+  );
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
 
 export async function getJob(id: string): Promise<JobState> {
