@@ -14,10 +14,16 @@
       "path": "data/milhouse_runs.duckdb"
     },
     {
-      "name": "legacy_sqlite",
-      "description": "Placeholder: SQLite legado (no implementado en este MVP).",
-      "type": "sqlite",
-      "path": "data/legacy.sqlite"
+      "name": "VBolsa",
+      "description": "VBolsa",
+      "type": "sql_server",
+      "host": "localhost",
+      "port": 1433,
+      "user": "hgiraudo",
+      "password": "hg741852+",
+      "database": "",
+      "encrypt": "on",
+      "trust_server_certificate": true
     }
   ]
 }
