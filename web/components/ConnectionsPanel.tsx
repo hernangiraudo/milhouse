@@ -12,6 +12,7 @@ import {
   type TestConnectionResult,
 } from "@/lib/api";
 import type { ConnectionsResponse, ConnectionSummary } from "@/lib/types";
+import { useDialog } from "./Dialog";
 
 type TypeKey =
   | "duckdb"
@@ -36,6 +37,7 @@ const TYPE_STYLES: Record<
 };
 
 export function ConnectionsPanel() {
+  const dialog = useDialog();
   const [data, setData] = useState<ConnectionsResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -71,7 +73,12 @@ export function ConnectionsPanel() {
   }
 
   async function onDelete(name: string) {
-    if (!confirm(`¿Eliminar la conexión "${name}"?`)) return;
+    const ok = await dialog.confirm(`¿Eliminar la conexión "${name}"?`, {
+      title: "Eliminar conexión",
+      variant: "danger",
+      ok: "Eliminar",
+    });
+    if (!ok) return;
     try {
       await deleteConnection(name);
       await load();

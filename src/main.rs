@@ -92,6 +92,20 @@ async fn main() -> anyhow::Result<()> {
             post(routes::test_connection_endpoint),
         )
         .route(
+            "/api/connections/:name/tables",
+            get(routes::list_tables_endpoint),
+        )
+        .route(
+            "/api/connections/:name/tables/:table/columns",
+            get(routes::list_columns_endpoint),
+        )
+        .route("/api/ai/available", get(routes::ai_available))
+        .route("/api/ai/build-step", post(routes::ai_build_step))
+        .route(
+            "/api/registry/procedural",
+            get(routes::list_registry_procedural),
+        )
+        .route(
             "/api/users",
             get(routes::list_users).post(routes::create_user),
         )
@@ -117,6 +131,13 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/runs/:id/datasets/:uid/export",
             get(routes::export_dataset),
+        )
+        .route("/api/runs/:id/bundle", get(routes::export_run_bundle))
+        .route(
+            "/api/configs/:name/preload",
+            get(routes::preload_status)
+                .post(routes::import_preload)
+                .delete(routes::delete_preload),
         )
         // Casos
         .route(

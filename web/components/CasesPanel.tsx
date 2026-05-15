@@ -10,6 +10,7 @@ import {
   type QueryRows,
 } from "@/lib/api";
 import { useUser } from "@/lib/session";
+import { useDialog } from "./Dialog";
 
 type StatusFilter = "all" | "open" | "closed";
 type SortCol = "severity" | "assignee" | "created_at";
@@ -24,6 +25,7 @@ const SEVERITY_ORDER: Record<string, number> = {
 
 export function CasesPanel() {
   const me = useUser();
+  const dialog = useDialog();
   const [list, setList] = useState<QueryRows | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
@@ -105,7 +107,12 @@ export function CasesPanel() {
 
   async function onClose() {
     if (selectedId == null) return;
-    if (!confirm(`¿Cerrar el caso #${selectedId}?`)) return;
+    const ok = await dialog.confirm(`¿Cerrar el caso #${selectedId}?`, {
+      title: "Cerrar caso",
+      variant: "warning",
+      ok: "Cerrar caso",
+    });
+    if (!ok) return;
     try {
       await closeCase(selectedId, me);
       await reload();
@@ -303,8 +310,8 @@ function CasesTable({
               <Td>
                 <StatusBadge status={String(r[ci("status")])} />
               </Td>
-              <Td mono>{r[ci("assignee")] ?? "—"}</Td>
-              <Td mono>{r[ci("creator")] ?? "—"}</Td>
+              <Td mono>{(r[ci("assignee")] as string | null) ?? "—"}</Td>
+              <Td mono>{(r[ci("creator")] as string | null) ?? "—"}</Td>
               <Td>{String(r[ci("datasets_count")] ?? 0)}</Td>
               <Td>{String(r[ci("comments_count")] ?? 0)}</Td>
               <Td>{formatDate(r[ci("created_at")])}</Td>

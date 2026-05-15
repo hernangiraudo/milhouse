@@ -21,6 +21,8 @@ pub async fn run(
         let join_type = match how {
             JoinHow::Inner => JoinType::Inner,
             JoinHow::Left => JoinType::Left,
+            JoinHow::Right => JoinType::Right,
+            JoinHow::Full => JoinType::Full,
         };
         let l_expr: Vec<Expr> = left_on.iter().map(|c| col(c.as_str())).collect();
         let r_expr: Vec<Expr> = right_on.iter().map(|c| col(c.as_str())).collect();

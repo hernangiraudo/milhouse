@@ -5,6 +5,7 @@
 //! `connections.json`.
 
 pub mod worker;
+pub mod bundle;
 
 use crate::engine::ConnectionPool;
 use crate::orchestrator::state::{JobStatus, LogLine, StepRuntimeState};
@@ -180,7 +181,7 @@ impl RunStore {
 }
 
 fn duck_value_to_json(v: duckdb::types::Value) -> serde_json::Value {
-    use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
     use duckdb::types::Value as V;
     use serde_json::Value as J;
     match v {
@@ -218,7 +219,7 @@ fn duck_value_to_json(v: duckdb::types::Value) -> serde_json::Value {
             }
         }
         V::Date32(days) => {
-            let dt = NaiveDateTime::from_timestamp_opt((days as i64) * 86400, 0);
+            let dt = DateTime::from_timestamp((days as i64) * 86400, 0);
             match dt {
                 Some(d) => J::String(d.format("%Y-%m-%d").to_string()),
                 None => J::Null,
@@ -270,6 +271,22 @@ impl RunStore {
         let user = user.map(|s| s.to_string());
         tokio::task::spawn_blocking(move || -> Result<()> {
             let guard = conn.blocking_lock();
+            // Si ya existe, lo dejamos pasar (reutilización en re-ejecución
+            // parcial); el caller será responsable de actualizarlo a 'running'.
+            let exists: i64 = guard
+                .query_row(
+                    "SELECT COUNT(*) FROM runs WHERE job_id = ?",
+                    params![job_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if exists > 0 {
+                guard.execute(
+                    "UPDATE runs SET status = 'running', finished_at = NULL, duration_ms = NULL WHERE job_id = ?",
+                    params![job_id],
+                )?;
+                return Ok(());
+            }
             guard.execute(
                 "INSERT INTO runs (job_id, config_name, config_display_name, user_name, debug, status, started_at, total_steps)
                  VALUES (?, ?, ?, ?, ?, 'running', ?, ?)",
@@ -283,6 +300,46 @@ impl RunStore {
                     total_steps as i64
                 ],
             )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Limpia las filas de logs/datasets de los pasos que se van a re-ejecutar,
+    /// para que la corrida nueva sobreescriba la anterior sin acumular ruido.
+    pub async fn clear_steps_for_rerun(
+        &self,
+        job_id: &str,
+        step_uids: Vec<u32>,
+    ) -> Result<()> {
+        if step_uids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.clone();
+        let job_id = job_id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let guard = conn.blocking_lock();
+            for uid in &step_uids {
+                guard.execute(
+                    "DELETE FROM step_logs WHERE job_id = ? AND step_uid = ?",
+                    params![job_id, *uid as i64],
+                )?;
+                // Borrar tabla física del dataset si existe + entrada en step_datasets.
+                let tn: Option<String> = guard
+                    .query_row(
+                        "SELECT table_name FROM step_datasets WHERE job_id = ? AND step_uid = ?",
+                        params![job_id, *uid as i64],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if let Some(table) = tn {
+                    let _ = guard.execute_batch(&format!("DROP TABLE IF EXISTS \"{table}\";"));
+                }
+                guard.execute(
+                    "DELETE FROM step_datasets WHERE job_id = ? AND step_uid = ?",
+                    params![job_id, *uid as i64],
+                )?;
+            }
             Ok(())
         })
         .await?
@@ -681,6 +738,39 @@ impl RunStore {
         .await?
     }
 
+    /// Lista metadatos básicos de cada step_dataset de un run (para bundles).
+    pub async fn list_run_dataset_meta(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<DatasetMeta>> {
+        let conn = self.conn.clone();
+        let job_id = job_id.to_string();
+        tokio::task::spawn_blocking(move || -> Result<Vec<DatasetMeta>> {
+            let guard = conn.blocking_lock();
+            let mut stmt = guard.prepare(
+                "SELECT sd.step_uid, sd.name, sd.level, sd.table_name, sd.row_count, sr.step_id
+                 FROM step_datasets sd
+                 LEFT JOIN step_runs sr ON sr.job_id = sd.job_id AND sr.step_uid = sd.step_uid
+                 WHERE sd.job_id = ?
+                 ORDER BY sd.step_uid",
+            )?;
+            let mut rows = stmt.query(params![job_id])?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                out.push(DatasetMeta {
+                    step_uid: r.get::<_, i64>(0)? as u32,
+                    name: r.get(1)?,
+                    level: r.get(2)?,
+                    table_name: r.get(3)?,
+                    row_count: r.get::<_, i64>(4).unwrap_or(0),
+                    step_id: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                });
+            }
+            Ok(out)
+        })
+        .await?
+    }
+
     // -----------------------------------------------------------------
     // Schedules
     // -----------------------------------------------------------------
@@ -863,6 +953,16 @@ pub struct DatasetPreview {
     pub size_bytes: u64,
     pub columns: Vec<String>,
     pub rows: Vec<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DatasetMeta {
+    pub step_uid: u32,
+    pub step_id: String,
+    pub name: String,
+    pub level: String,
+    pub table_name: String,
+    pub row_count: i64,
 }
 
 fn extract_step_fields(

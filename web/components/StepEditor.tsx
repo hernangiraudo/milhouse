@@ -1,6 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { SqlQueryVisual } from "./step_editors/SqlQueryVisual";
+import { SqlExecVisual } from "./step_editors/SqlExecVisual";
+import { JoinVisual } from "./step_editors/JoinVisual";
+import { LookupVisual } from "./step_editors/LookupVisual";
+import { TransformVisual } from "./step_editors/TransformVisual";
+import { FilterSubsetVisual } from "./step_editors/FilterSubsetVisual";
+import { SortVisual } from "./step_editors/SortVisual";
+import { ProceduralVisual } from "./step_editors/ProceduralVisual";
+import { ExportVisual } from "./step_editors/ExportVisual";
 
 export type Step = Record<string, unknown> & {
   id: string;
@@ -27,6 +36,8 @@ interface Props {
   step: Step;
   allStepIds: string[];
   allGroups: string[];
+  /** Pasos previos con su output_table, para que el editor Join elija de ahí. */
+  availableTables?: Array<{ output_table: string; step_id: string }>;
   onChange: (next: Step) => void;
   onDelete: () => void;
 }
@@ -35,6 +46,7 @@ export function StepEditor({
   step,
   allStepIds,
   allGroups,
+  availableTables = [],
   onChange,
   onDelete,
 }: Props) {
@@ -220,7 +232,11 @@ export function StepEditor({
             </Field>
           </div>
 
-          <KindFields step={step} update={updateMany} />
+          <KindFields
+            step={step}
+            update={updateMany}
+            availableTables={availableTables}
+          />
         </>
       ) : (
         <>
@@ -267,143 +283,101 @@ export function StepEditor({
 function KindFields({
   step,
   update,
+  availableTables,
 }: {
   step: Step;
   update: (p: Partial<Step>) => void;
+  availableTables: Array<{ output_table: string; step_id: string }>;
 }) {
   const k = step.kind;
   if (k === "sql_query") {
     return (
-      <>
-        <Field label="Connection">
-          <input
-            value={(step.connection as string) ?? ""}
-            onChange={(e) =>
-              update({
-                connection: e.target.value.trim() ? e.target.value : null,
-              })
-            }
-            placeholder="(default)"
-            className="w-full milhouse-field"
-          />
-        </Field>
-        <Field label="Query SQL">
-          <textarea
-            value={(step.query as string) ?? ""}
-            onChange={(e) => update({ query: e.target.value })}
-            rows={5}
-            className="w-full milhouse-codeblock"
-            spellCheck={false}
-          />
-        </Field>
-        <Field label="output_table">
-          <input
-            value={(step.output_table as string) ?? ""}
-            onChange={(e) => update({ output_table: e.target.value })}
-            className="w-full milhouse-field font-mono"
-            placeholder="ej. tx_raw"
-          />
-        </Field>
-      </>
+      <SqlQueryVisual
+        step={step as Parameters<typeof SqlQueryVisual>[0]["step"]}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
     );
   }
   if (k === "sql_exec") {
     return (
-      <>
-        <Field label="Connection">
-          <input
-            value={(step.connection as string) ?? ""}
-            onChange={(e) =>
-              update({
-                connection: e.target.value.trim() ? e.target.value : null,
-              })
-            }
-            placeholder="(default)"
-            className="w-full milhouse-field"
-          />
-        </Field>
-        <Field label="Sentencias SQL (separadas por `;`)">
-          <textarea
-            value={(step.query as string) ?? ""}
-            onChange={(e) => update({ query: e.target.value })}
-            rows={6}
-            className="w-full milhouse-codeblock"
-            spellCheck={false}
-          />
-        </Field>
-      </>
+      <SqlExecVisual
+        step={step as Parameters<typeof SqlExecVisual>[0]["step"]}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
     );
   }
   if (k === "join") {
     return (
-      <>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Tabla izquierda">
-            <input
-              value={(step.left as string) ?? ""}
-              onChange={(e) => update({ left: e.target.value })}
-              className="w-full milhouse-field font-mono"
-            />
-          </Field>
-          <Field label="Tabla derecha">
-            <input
-              value={(step.right as string) ?? ""}
-              onChange={(e) => update({ right: e.target.value })}
-              className="w-full milhouse-field font-mono"
-            />
-          </Field>
-        </div>
-        <div className="grid grid-cols-[2fr_2fr_1fr] gap-3">
-          <Field label="left_on (coma)">
-            <input
-              value={((step.left_on as string[]) ?? []).join(", ")}
-              onChange={(e) =>
-                update({
-                  left_on: e.target.value
-                    .split(",")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
-              className="w-full milhouse-field font-mono"
-            />
-          </Field>
-          <Field label="right_on (coma)">
-            <input
-              value={((step.right_on as string[]) ?? []).join(", ")}
-              onChange={(e) =>
-                update({
-                  right_on: e.target.value
-                    .split(",")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
-              className="w-full milhouse-field font-mono"
-            />
-          </Field>
-          <Field label="Tipo de join">
-            <select
-              value={(step.how as string) ?? "inner"}
-              onChange={(e) => update({ how: e.target.value })}
-              className="w-full milhouse-field"
-            >
-              <option value="inner">inner</option>
-              <option value="left">left</option>
-            </select>
-          </Field>
-        </div>
-        <Field label="output_table">
-          <input
-            value={(step.output_table as string) ?? ""}
-            onChange={(e) => update({ output_table: e.target.value })}
-            className="w-full milhouse-field font-mono"
-          />
-        </Field>
-      </>
+      <JoinVisual
+        step={step as Parameters<typeof JoinVisual>[0]["step"]}
+        available={availableTables}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
     );
   }
   if (k === "lookup") {
+    return (
+      <LookupVisual
+        step={step as Parameters<typeof LookupVisual>[0]["step"]}
+        available={availableTables}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
+    );
+  }
+  if (k === "transform") {
+    return (
+      <TransformVisual
+        step={step as Parameters<typeof TransformVisual>[0]["step"]}
+        available={availableTables}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
+    );
+  }
+  if (k === "filter_and_subset") {
+    return (
+      <FilterSubsetVisual
+        step={step as Parameters<typeof FilterSubsetVisual>[0]["step"]}
+        available={availableTables}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
+    );
+  }
+  if (k === "sort") {
+    return (
+      <SortVisual
+        step={step as Parameters<typeof SortVisual>[0]["step"]}
+        available={availableTables}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
+    );
+  }
+  if (k === "procedural") {
+    return (
+      <ProceduralVisual
+        step={step as Parameters<typeof ProceduralVisual>[0]["step"]}
+        available={availableTables}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
+    );
+  }
+  if (k === "export") {
+    return (
+      <ExportVisual
+        step={step as Parameters<typeof ExportVisual>[0]["step"]}
+        available={availableTables}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
+    );
+  }
+  return null;
+}
+
+/* Legacy non-visual KindFields removed - all kinds have visual editors now.
+   The block below is preserved inside a comment so future Claude sessions can
+   recover it if needed, but it's not executed.
+
+   ORIGINAL CODE FOLLOWS (commented out):
+=========================================================================
     return (
       <>
         <div className="grid grid-cols-2 gap-3">
@@ -762,6 +736,7 @@ function KindFields({
   }
   return null;
 }
+*/
 
 // =====================================================================
 // Helpers

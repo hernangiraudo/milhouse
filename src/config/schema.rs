@@ -27,6 +27,10 @@ pub struct GroupMeta {
     /// Color hex sugerido (opcional). Si no, la UI elige.
     #[serde(default)]
     pub color: Option<String>,
+    /// Grupo padre (anidado). Si está presente, el lienzo dibuja el padre
+    /// abarcando todos los nodos y sub-grupos.
+    #[serde(default)]
+    pub parent_group: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -121,12 +125,18 @@ pub enum StepSpec {
         master_key: String,
         #[serde(default)]
         select: Vec<LookupSelect>,
-        output_table: String,
+        /// Si se omite, el resultado modifica la tabla `input` (in-place
+        /// lógico: sobreescribe la entrada en el TableStore y permite
+        /// liberar la versión anterior).
+        #[serde(default)]
+        output_table: Option<String>,
     },
     Transform {
         input: String,
         operations: Vec<TransformOp>,
-        output_table: String,
+        /// Si se omite, el resultado modifica la tabla `input`.
+        #[serde(default)]
+        output_table: Option<String>,
     },
     FilterAndSubset {
         input: String,
@@ -134,7 +144,9 @@ pub enum StepSpec {
         filter: Option<String>,
         #[serde(default)]
         select: Vec<String>,
-        output_table: String,
+        /// Si se omite, el resultado modifica la tabla `input`.
+        #[serde(default)]
+        output_table: Option<String>,
     },
     Sort {
         input: String,
@@ -156,7 +168,9 @@ pub enum StepSpec {
         params: serde_json::Value,
         #[serde(default)]
         state_init: serde_json::Value,
-        output_table: String,
+        /// Si se omite, el resultado modifica la tabla `input`.
+        #[serde(default)]
+        output_table: Option<String>,
     },
 }
 
@@ -165,6 +179,8 @@ pub enum StepSpec {
 pub enum JoinHow {
     Inner,
     Left,
+    Right,
+    Full,
 }
 
 fn default_join_how() -> JoinHow {
@@ -269,11 +285,29 @@ impl Step {
         match &self.spec {
             StepSpec::SqlQuery { output_table, .. }
             | StepSpec::Join { output_table, .. }
-            | StepSpec::Lookup { output_table, .. }
-            | StepSpec::Transform { output_table, .. }
-            | StepSpec::FilterAndSubset { output_table, .. }
-            | StepSpec::Sort { output_table, .. }
-            | StepSpec::Procedural { output_table, .. } => Some(output_table.as_str()),
+            | StepSpec::Sort { output_table, .. } => Some(output_table.as_str()),
+            // Para los kinds que aceptan modificar in-place: si el usuario no
+            // dio output_table, el resultado va a la misma tabla input.
+            StepSpec::Lookup {
+                input,
+                output_table,
+                ..
+            }
+            | StepSpec::Transform {
+                input,
+                output_table,
+                ..
+            }
+            | StepSpec::FilterAndSubset {
+                input,
+                output_table,
+                ..
+            }
+            | StepSpec::Procedural {
+                input,
+                output_table,
+                ..
+            } => Some(output_table.as_deref().unwrap_or(input.as_str())),
             StepSpec::Export { .. } | StepSpec::SqlExec { .. } => None,
         }
     }

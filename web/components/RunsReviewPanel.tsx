@@ -14,12 +14,14 @@ import {
   type QueryRows,
 } from "@/lib/api";
 import { AttachToCaseDialog, CreateCaseDialog } from "./CaseDialogs";
+import { useDialog } from "./Dialog";
 
 type LogFilter = "all" | "info" | "warn" | "error";
 type SortCol = "started_at" | "user_name" | "duration_ms";
 type SortDir = "asc" | "desc";
 
 export function RunsReviewPanel() {
+  const dialog = useDialog();
   const [runs, setRuns] = useState<QueryRows | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
@@ -108,7 +110,8 @@ export function RunsReviewPanel() {
     const seen = new Map<string, string>();
     for (const r of runs.rows) {
       const v = String(r[ciCfg]);
-      const label = (r[ciDisp] && String(r[ciDisp])) || v;
+      const dispRaw = r[ciDisp];
+      const label = dispRaw ? String(dispRaw) : v;
       if (!seen.has(v)) seen.set(v, label);
     }
     return Array.from(seen.entries())
@@ -172,8 +175,11 @@ export function RunsReviewPanel() {
   }
 
   async function onDeleteOne(jobId: string) {
-    if (!confirm(`¿Eliminar el job ${jobId.slice(0, 8)} y sus datasets?`))
-      return;
+    const ok = await dialog.confirm(
+      `¿Eliminar el job ${jobId.slice(0, 8)} y sus datasets?`,
+      { title: "Eliminar job", variant: "danger", ok: "Eliminar" },
+    );
+    if (!ok) return;
     try {
       await deleteRun(jobId);
       checked.delete(jobId);
@@ -183,10 +189,11 @@ export function RunsReviewPanel() {
     } catch (e) {
       if (e instanceof OpenCasesBlockError) {
         const list = e.cases.map((c) => `#${c}`).join(", ");
-        alert(
-          `⚠ No se puede eliminar el job ${jobId.slice(0, 8)}:\n\n` +
-            `Tiene datasets adjuntos a los siguientes casos ABIERTOS: ${list}\n\n` +
+        await dialog.alert(
+          `No se puede eliminar el job ${jobId.slice(0, 8)}.\n\n` +
+            `Tiene datasets adjuntos a los siguientes casos abiertos: ${list}\n\n` +
             `Cerralos primero desde la sección "Casos" y volvé a intentar.`,
+          { title: "Bloqueado por casos abiertos", variant: "warning" },
         );
         setErr(null);
       } else {
@@ -196,12 +203,11 @@ export function RunsReviewPanel() {
   }
   async function onDeleteSelected() {
     if (checked.size === 0) return;
-    if (
-      !confirm(
-        `¿Eliminar ${checked.size} job(s) y todos sus datasets? Esta acción no se puede deshacer.`,
-      )
-    )
-      return;
+    const ok = await dialog.confirm(
+      `¿Eliminar ${checked.size} job(s) y todos sus datasets? Esta acción no se puede deshacer.`,
+      { title: "Eliminar jobs", variant: "danger", ok: "Eliminar todo" },
+    );
+    if (!ok) return;
     const blocked: Array<{ jobId: string; cases: number[] }> = [];
     let deletedAny = false;
     for (const id of Array.from(checked)) {
@@ -229,8 +235,9 @@ export function RunsReviewPanel() {
             `  • ${b.jobId.slice(0, 8)} → casos abiertos: ${b.cases.map((c) => `#${c}`).join(", ")}`,
         )
         .join("\n");
-      alert(
-        `⚠ ${blocked.length} job(s) no se eliminaron porque tienen datasets adjuntos a casos abiertos:\n\n${lines}\n\nCerralos primero desde "Casos".`,
+      await dialog.alert(
+        `${blocked.length} job(s) no se eliminaron porque tienen datasets adjuntos a casos abiertos:\n\n${lines}\n\nCerralos primero desde "Casos".`,
+        { title: "Algunos no se eliminaron", variant: "warning" },
       );
     }
   }
@@ -480,7 +487,10 @@ export function RunsReviewPanel() {
           onClose={() => setShowCreateCase(false)}
           onCreated={(id) => {
             setShowCreateCase(false);
-            alert(`✓ Caso #${id} creado y dataset adjunto.`);
+            dialog.alert(`Caso #${id} creado y dataset adjunto.`, {
+              title: "Caso creado",
+              variant: "info",
+            });
           }}
         />
       )}
@@ -494,7 +504,10 @@ export function RunsReviewPanel() {
           onClose={() => setShowAttachCase(false)}
           onAttached={(id) => {
             setShowAttachCase(false);
-            alert(`✓ Dataset adjunto al caso #${id}.`);
+            dialog.alert(`Dataset adjunto al caso #${id}.`, {
+              title: "Dataset adjunto",
+              variant: "info",
+            });
           }}
         />
       )}
@@ -662,7 +675,7 @@ function StepsTable({
               <Td>
                 <StatusBadge status={String(r[ci("status")])} />
               </Td>
-              <Td>{r[ci("row_count")] ?? "—"}</Td>
+              <Td>{(r[ci("row_count")] as number | null) ?? "—"}</Td>
               <Td>{formatMs(r[ci("duration_ms")])}</Td>
             </tr>
           );

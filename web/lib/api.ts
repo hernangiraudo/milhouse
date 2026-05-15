@@ -5,6 +5,8 @@ import type {
   JobSummary,
 } from "./types";
 
+export type { ConfigSummary, ConnectionsResponse, JobState, JobSummary };
+
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8090";
 export const WS_BASE =
@@ -82,7 +84,14 @@ export async function listJobs(): Promise<JobSummary[]> {
 
 export async function createJob(
   configName: string,
-  opts?: { user?: string | null; debug?: boolean },
+  opts?: {
+    user?: string | null;
+    debug?: boolean;
+    target_steps?: string[] | null;
+    stop_on_failure?: boolean;
+    use_preload?: boolean;
+    existing_job_id?: string | null;
+  },
 ): Promise<{ job_id: string }> {
   const r = await fetch(`${API_BASE}/api/jobs`, {
     method: "POST",
@@ -91,10 +100,53 @@ export async function createJob(
       config_name: configName,
       user: opts?.user ?? null,
       debug: opts?.debug ?? false,
+      target_steps: opts?.target_steps ?? null,
+      stop_on_failure: opts?.stop_on_failure ?? false,
+      use_preload: opts?.use_preload ?? false,
+      existing_job_id: opts?.existing_job_id ?? null,
     }),
   });
   if (!r.ok) throw new Error(`createJob ${r.status} ${await r.text()}`);
   return r.json();
+}
+
+export function exportRunBundleUrl(jobId: string): string {
+  return `${API_BASE}/api/runs/${encodeURIComponent(jobId)}/bundle`;
+}
+
+export async function importPreload(
+  configName: string,
+  file: File,
+): Promise<{ manifest: { datasets: Array<{ step_id: string }> } }> {
+  const r = await fetch(
+    `${API_BASE}/api/configs/${encodeURIComponent(configName)}/preload`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/zip" },
+      body: file,
+    },
+  );
+  if (!r.ok) throw new Error(`importPreload ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+export async function getPreloadStatus(
+  configName: string,
+): Promise<{ has_preload: boolean; preloaded_step_ids: string[] }> {
+  const r = await fetch(
+    `${API_BASE}/api/configs/${encodeURIComponent(configName)}/preload`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw new Error(`getPreloadStatus ${r.status}`);
+  return r.json();
+}
+
+export async function deletePreload(configName: string): Promise<void> {
+  const r = await fetch(
+    `${API_BASE}/api/configs/${encodeURIComponent(configName)}/preload`,
+    { method: "DELETE" },
+  );
+  if (!r.ok) throw new Error(`deletePreload ${r.status}`);
 }
 
 export async function cancelJob(id: string): Promise<void> {
@@ -144,6 +196,79 @@ export async function updateConnection(
   );
   if (!r.ok) throw new Error(await r.text());
 }
+export interface TableInfo {
+  schema: string | null;
+  name: string;
+  kind: string;
+}
+export interface ColumnInfo {
+  name: string;
+  data_type: string;
+  nullable: boolean | null;
+  is_primary_key?: boolean;
+}
+
+export async function listConnectionTables(name: string): Promise<TableInfo[]> {
+  const r = await fetch(
+    `${API_BASE}/api/connections/${encodeURIComponent(name)}/tables`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+export async function listTableColumns(
+  conn: string,
+  table: string,
+  schema?: string | null,
+): Promise<ColumnInfo[]> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
+  const r = await fetch(
+    `${API_BASE}/api/connections/${encodeURIComponent(
+      conn,
+    )}/tables/${encodeURIComponent(table)}/columns${qs}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function listRegistryProcedural(): Promise<string[]> {
+  const r = await fetch(`${API_BASE}/api/registry/procedural`, {
+    cache: "no-store",
+  });
+  if (!r.ok) return [];
+  const d = (await r.json()) as { functions: string[] };
+  return d.functions;
+}
+
+// ---- Milhouse-AI ----
+export async function aiAvailable(): Promise<boolean> {
+  try {
+    const r = await fetch(`${API_BASE}/api/ai/available`, { cache: "no-store" });
+    if (!r.ok) return false;
+    const d = (await r.json()) as { available: boolean };
+    return d.available;
+  } catch {
+    return false;
+  }
+}
+
+export async function aiBuildStep(body: {
+  description: string;
+  existing_step_ids?: string[];
+  existing_tables?: Record<string, string>;
+  connections?: Array<{ name: string; type: string }>;
+  known_tables?: string[];
+}): Promise<{ step: Record<string, unknown>; raw: string }> {
+  const r = await fetch(`${API_BASE}/api/ai/build-step`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function deleteConnection(name: string): Promise<void> {
   const r = await fetch(
     `${API_BASE}/api/connections/${encodeURIComponent(name)}`,

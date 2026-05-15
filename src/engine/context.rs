@@ -374,10 +374,28 @@ pub struct StepContext {
 impl StepContext {
     pub async fn get_table(&self, name: &str) -> Result<Arc<DataFrame>> {
         let guard = self.tables.read().await;
-        guard
-            .get(name)
-            .cloned()
-            .ok_or_else(|| anyhow!("table `{}` not found in store", name))
+        match guard.get(name).cloned() {
+            Some(df) => Ok(df),
+            None => {
+                let mut available: Vec<&String> = guard.keys().collect();
+                available.sort();
+                let list = if available.is_empty() {
+                    "<ninguna>".to_string()
+                } else {
+                    available
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                Err(anyhow!(
+                    "tabla `{}` no encontrada en el store. Tablas disponibles: {}. \
+                     Probablemente el step que la produce no se ejecutó antes (revisar depends_on).",
+                    name,
+                    list
+                ))
+            }
+        }
     }
 
     pub async fn insert_table(&self, name: String, df: DataFrame) {

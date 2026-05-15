@@ -1,6 +1,7 @@
 pub mod context;
 pub mod export;
 pub mod filter_subset;
+pub mod introspect;
 pub mod join;
 pub mod lookup;
 pub mod procedural;
@@ -52,7 +53,8 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             output_table,
         } => {
             let df = lookup::run(ctx, input, master, key, master_key, select).await?;
-            StepOutcome::table(output_table.clone(), df)
+            let name = output_table.clone().unwrap_or_else(|| input.clone());
+            StepOutcome::table(name, df)
         }
         StepSpec::Transform {
             input,
@@ -60,7 +62,8 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             output_table,
         } => {
             let df = transform::run(ctx, input, operations).await?;
-            StepOutcome::table(output_table.clone(), df)
+            let name = output_table.clone().unwrap_or_else(|| input.clone());
+            StepOutcome::table(name, df)
         }
         StepSpec::FilterAndSubset {
             input,
@@ -69,7 +72,8 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             output_table,
         } => {
             let df = filter_subset::run(ctx, input, filter.as_deref(), select).await?;
-            StepOutcome::table(output_table.clone(), df)
+            let name = output_table.clone().unwrap_or_else(|| input.clone());
+            StepOutcome::table(name, df)
         }
         StepSpec::Sort {
             input,
@@ -103,7 +107,8 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
                 reporter,
             )
             .await?;
-            StepOutcome::table(output_table.clone(), df)
+            let name = output_table.clone().unwrap_or_else(|| input.clone());
+            StepOutcome::table(name, df)
         }
     };
     Ok(outcome)

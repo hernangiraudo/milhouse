@@ -41,7 +41,22 @@
       "PowerShell(Start-Process \"http://localhost:3000/jobs/6c0bd9bd-33bc-45fc-bcbe-19ff5adc662f\")",
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total:', len\\(d['rows']\\)\\)\")",
       "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('total runs:', len\\(d['rows']\\)\\)\")",
-      "PowerShell(Get-NetTCPConnection *)"
+      "PowerShell(Get-NetTCPConnection *)",
+      "Bash(sync)",
+      "Bash(awk 'NR>=375 && NR<=741' \"C:/Users/hgira/rust/milhouse/web/components/StepEditor.tsx\")",
+      "Bash(awk 'NR>=380 && NR<=735' \"C:/Users/hgira/rust/milhouse/web/components/StepEditor.tsx\")",
+      "Bash(cargo doc *)",
+      "Bash(cargo tree *)",
+      "Bash(cargo update *)",
+      "Bash(cargo clean *)",
+      "Bash(cargo run *)",
+      "Bash(tee /tmp/milhouse.log)",
+      "Bash(taskkill //F //IM milhouse.exe)",
+      "Bash(unzip -l /tmp/bundle.zip)",
+      "Bash(unzip -p /tmp/bundle.zip manifest.json)",
+      "PowerShell(netstat *)",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(Stop-Process *)"
     ]
   }
 }

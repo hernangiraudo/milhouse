@@ -6,32 +6,38 @@
     {
       "name": "prepare",
       "description": "Preparación de la base (DDL y materializaciones).",
-      "color": null
+      "color": null,
+      "parent_group": null
     },
     {
       "name": "ingest",
       "description": "Carga de tablas desde la base hacia memoria.",
-      "color": null
+      "color": null,
+      "parent_group": null
     },
     {
       "name": "enrich",
       "description": "Joins y lookups para denormalizar.",
-      "color": null
+      "color": null,
+      "parent_group": null
     },
     {
       "name": "transform",
       "description": "Transformaciones de tipos y filtros.",
-      "color": null
+      "color": null,
+      "parent_group": null
     },
     {
       "name": "score",
       "description": "Lógica fila-por-fila: scoring de fraude.",
-      "color": null
+      "color": null,
+      "parent_group": null
     },
     {
       "name": "export",
       "description": "Salidas a archivos o tablas.",
-      "color": null
+      "color": null,
+      "parent_group": null
     }
   ],
   "steps": [
@@ -40,9 +46,11 @@
       "id": "prepare_db",
       "depends_on": [],
       "group": "prepare",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "sql_exec",
-      "query": "CREATE OR REPLACE TABLE tx_recent AS SELECT * FROM transactions WHERE CAST(timestamp AS TIMESTAMP) >= (CURRENT_TIMESTAMP::TIMESTAMP - INTERVAL 365 DAY); CREATE INDEX IF NOT EXISTS idx_tx_recent_account ON tx_recent(account_id);",
-      "connection": null
+      "query": "CREATE OR REPLACE TABLE tx_recent AS \nSELECT * \nFROM transactions \nWHERE CAST(timestamp AS TIMESTAMP) >= (CURRENT_TIMESTAMP::TIMESTAMP - INTERVAL 365 DAY);\n\nCREATE INDEX IF NOT EXISTS idx_tx_recent_account \nON tx_recent(account_id);",
+      "connection": "main"
     },
     {
       "step_uid": 2,
@@ -50,7 +58,9 @@
       "depends_on": [
         "prepare_db"
       ],
-      "group": "ingest",
+      "group": null,
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "sql_query",
       "query": "SELECT id AS currency_id, code, symbol, rate_to_usd FROM currencies",
       "connection": null,
@@ -62,7 +72,9 @@
       "depends_on": [
         "prepare_db"
       ],
-      "group": "ingest",
+      "group": null,
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "sql_query",
       "query": "SELECT id AS category_id, name AS category_name, parent_id FROM categories",
       "connection": null,
@@ -74,7 +86,9 @@
       "depends_on": [
         "prepare_db"
       ],
-      "group": "ingest",
+      "group": null,
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "sql_query",
       "query": "SELECT id AS account_id, owner_name, country AS account_country, currency_id AS account_currency_id, opened_at FROM accounts",
       "connection": null,
@@ -86,7 +100,9 @@
       "depends_on": [
         "prepare_db"
       ],
-      "group": "ingest",
+      "group": null,
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "sql_query",
       "query": "SELECT tx_id, account_id, category_id, amount, currency_id, timestamp, country, status FROM tx_recent",
       "connection": null,
@@ -100,6 +116,8 @@
         "load_accounts"
       ],
       "group": "enrich",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "join",
       "left": "tx_raw",
       "right": "accounts",
@@ -120,6 +138,8 @@
         "load_currencies"
       ],
       "group": "enrich",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "lookup",
       "input": "tx_with_account",
       "master": "currencies",
@@ -145,6 +165,8 @@
         "load_categories"
       ],
       "group": "enrich",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "lookup",
       "input": "tx_with_currency",
       "master": "categories",
@@ -165,6 +187,8 @@
         "lookup_categories"
       ],
       "group": "transform",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "transform",
       "input": "tx_enriched",
       "operations": [
@@ -195,6 +219,8 @@
         "tx_date"
       ],
       "group": "transform",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "filter_and_subset",
       "input": "tx_typed",
       "filter": "amount > 1000 AND status == 'ok'",
@@ -227,7 +253,7 @@
       "params": null,
       "state_init": {
         "flagged": 0,
-        "sum_amount": 0.0
+        "sum_amount": 0
       },
       "output_table": "tx_scored_rhai"
     },
@@ -246,7 +272,7 @@
       "script": null,
       "fn_name": "fraud_scoring_v1",
       "params": {
-        "threshold": 5000.0
+        "threshold": 5000
       },
       "state_init": null,
       "output_table": "tx_scored_rust"
@@ -258,6 +284,8 @@
         "filter_large_tx"
       ],
       "group": "transform",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "sort",
       "input": "tx_large",
       "by": [
@@ -280,6 +308,8 @@
         "fraud_score_rust"
       ],
       "group": "score",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "join",
       "left": "tx_scored_rhai",
       "right": "tx_scored_rust",
@@ -299,6 +329,8 @@
         "sort_tx_large"
       ],
       "group": "export",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "export",
       "input": "tx_large_sorted",
       "target": {
@@ -314,6 +346,8 @@
         "join_scores"
       ],
       "group": "export",
+      "log_level": "info",
+      "dataset_name": null,
       "kind": "export",
       "input": "tx_scores",
       "target": {

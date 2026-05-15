@@ -12,6 +12,7 @@ import {
   type ScheduleSpec,
 } from "@/lib/api";
 import { useUser } from "@/lib/session";
+import { useDialog } from "./Dialog";
 
 const DOW_LABELS = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 
@@ -19,6 +20,7 @@ type Mode = "at" | "window" | "cron";
 
 export function SchedulesPanel() {
   const me = useUser();
+  const dialog = useDialog();
   const [list, setList] = useState<ScheduleDto[]>([]);
   const [configs, setConfigs] = useState<ConfigSummary[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -113,7 +115,12 @@ export function SchedulesPanel() {
     }
   }
   async function onDelete(id: number, name: string) {
-    if (!confirm(`¿Eliminar el schedule "${name}"?`)) return;
+    const ok = await dialog.confirm(`¿Eliminar el schedule "${name}"?`, {
+      title: "Eliminar schedule",
+      variant: "danger",
+      ok: "Eliminar",
+    });
+    if (!ok) return;
     try {
       await deleteSchedule(id);
       await reload();

@@ -36,6 +36,19 @@ impl JobHandle {
     }
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct JobOptions {
+    /// Subset de step ids a ejecutar. None ⇒ todos.
+    pub target_steps: Option<HashSet<String>>,
+    /// Si true, ante el primer fallo, cancela el job entero.
+    pub stop_on_failure: bool,
+    /// Si true, antes del scheduler se cargan los datasets preloadeados al
+    /// TableStore desde `data/preloaded/<config_name>/`. Los steps cuyas
+    /// output_table quedan precargadas se marcan automáticamente como
+    /// Skipped.
+    pub use_preload: bool,
+}
+
 pub async fn run_job(
     job_id: String,
     config_name: String,
@@ -44,6 +57,7 @@ pub async fn run_job(
     cfg: EtlConfig,
     pool: Arc<ConnectionPool>,
     run_store: Option<Arc<crate::runs::RunStore>>,
+    options: JobOptions,
 ) -> Result<JobHandle> {
     if let Some(path) = &cfg.duckdb_path {
         tracing::warn!(
@@ -88,6 +102,7 @@ pub async fn run_job(
             name: g.name.clone(),
             description: g.description.clone(),
             color: g.color.clone(),
+            parent_group: g.parent_group.clone(),
         })
         .collect();
     {
@@ -107,6 +122,7 @@ pub async fn run_job(
                 name: g,
                 description: None,
                 color: None,
+                parent_group: None,
             });
         }
     }
@@ -175,6 +191,7 @@ pub async fn run_job(
         run_store,
         job_id.clone(),
         debug,
+        options,
     ));
 
     Ok(handle)
@@ -191,6 +208,7 @@ async fn supervisor_and_scheduler(
     run_store: Option<Arc<crate::runs::RunStore>>,
     job_id_owned: String,
     debug: bool,
+    options: JobOptions,
 ) {
     let job_started = Instant::now();
     let dag = match Dag::build(&cfg.steps) {
@@ -209,17 +227,97 @@ async fn supervisor_and_scheduler(
 
     // ready queue
     let mut in_degree = dag.in_degree.clone();
-    let mut ready: Vec<String> = in_degree
-        .iter()
-        .filter(|(_, &d)| d == 0)
-        .map(|(k, _)| k.clone())
-        .collect();
-    ready.sort();
-
     let mut running_count: usize = 0;
     let mut done_or_terminal: HashSet<String> = HashSet::new();
     let mut step_started_at: HashMap<String, Instant> = HashMap::new();
     let timings = load_timings();
+
+    // Preload: cargar parquet preloadeados al TableStore y marcar esos
+    // steps como Skipped { precargado }.
+    let config_name_for_preload = {
+        let s = state.read().await;
+        s.config_name.clone()
+    };
+    if options.use_preload {
+        let steps_by_id: HashMap<String, String> = cfg
+            .steps
+            .iter()
+            .filter_map(|s| s.output_table().map(|ot| (s.id.clone(), ot.to_string())))
+            .collect();
+        match crate::runs::bundle::load_preloaded_tables(&config_name_for_preload, &steps_by_id) {
+            Ok(loaded) => {
+                if !loaded.is_empty() {
+                    let mut guard = tables.write().await;
+                    for (k, v) in &loaded {
+                        guard.insert(k.clone(), Arc::new(v.clone()));
+                    }
+                    drop(guard);
+                    // Marcar como Skipped los steps cuyo output_table fue precargado.
+                    for s in &cfg.steps {
+                        if let Some(ot) = s.output_table() {
+                            if loaded.contains_key(ot) {
+                                set_step_state(
+                                    &state,
+                                    &s.id,
+                                    StepRuntimeState::Skipped {
+                                        reason: "precargado desde bundle".to_string(),
+                                    },
+                                    &broadcaster,
+                                )
+                                .await;
+                                done_or_terminal.insert(s.id.clone());
+                                let succs =
+                                    dag.successors.get(&s.id).cloned().unwrap_or_default();
+                                for next in succs {
+                                    if let Some(d) = in_degree.get_mut(&next) {
+                                        *d = d.saturating_sub(1);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("preload failed: {e:#}");
+            }
+        }
+    }
+
+    // Si hay subset, marcar como Skipped TODO lo que no está en él y
+    // decrementar in-degree de sus sucesores para que el grafo restante
+    // pueda avanzar.
+    if let Some(targets) = options.target_steps.as_ref() {
+        let all_ids: Vec<String> = cfg.steps.iter().map(|s| s.id.clone()).collect();
+        for sid in &all_ids {
+            if !targets.contains(sid) {
+                set_step_state(
+                    &state,
+                    sid,
+                    StepRuntimeState::Skipped {
+                        reason: "fuera del subset solicitado".to_string(),
+                    },
+                    &broadcaster,
+                )
+                .await;
+                done_or_terminal.insert(sid.clone());
+                // Decrementar in_degree de sucesores (como si hubiera terminado).
+                let succs = dag.successors.get(sid).cloned().unwrap_or_default();
+                for next in succs {
+                    if let Some(d) = in_degree.get_mut(&next) {
+                        *d = d.saturating_sub(1);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut ready: Vec<String> = in_degree
+        .iter()
+        .filter(|(id, &d)| d == 0 && !done_or_terminal.contains(*id))
+        .map(|(k, _)| k.clone())
+        .collect();
+    ready.sort();
 
     // Marcar ready
     for sid in &ready {
@@ -390,9 +488,16 @@ async fn supervisor_and_scheduler(
                 recompute_eta(&state, &broadcaster, &timings, &step_started_at).await;
             }
             StepUpdate::Failed { error } => {
+                // Línea de log con el error completo, para que aparezca en
+                // "Revisión de logs" sin tener que mirar el state crudo.
                 {
                     let mut s = state.write().await;
                     if let Some(info) = s.steps.get_mut(&msg.step_id) {
+                        info.logs.push(LogLine {
+                            at: Utc::now(),
+                            level: "error".to_string(),
+                            line: format!("step falló: {error}"),
+                        });
                         info.state = StepRuntimeState::Failed {
                             started_at: None,
                             finished_at: Utc::now(),
@@ -400,6 +505,11 @@ async fn supervisor_and_scheduler(
                         };
                     }
                 }
+                let _ = broadcaster.send(ProgressEvent::StepLog {
+                    step_id: msg.step_id.clone(),
+                    line: format!("step falló: {error}"),
+                    level: "error".to_string(),
+                });
                 let _ = broadcaster.send(ProgressEvent::StepStateChanged {
                     step_id: msg.step_id.clone(),
                     state: StepRuntimeState::Failed {
@@ -410,10 +520,40 @@ async fn supervisor_and_scheduler(
                 });
                 done_or_terminal.insert(msg.step_id.clone());
                 running_count = running_count.saturating_sub(1);
-                // Marcar descendientes como Skipped
+                if options.stop_on_failure {
+                    tracing::info!(
+                        "stop_on_failure enabled: cancelling job after `{}` failed",
+                        msg.step_id
+                    );
+                    cancel.cancel();
+                }
+                // Marcar descendientes como Skipped + persistir línea de log
+                // en cada uno para que la causa raíz quede registrada también
+                // donde el usuario va a mirar primero (los pasos saltados).
                 let descendants = collect_descendants(&dag.successors, &msg.step_id);
                 for d in descendants {
                     if !done_or_terminal.contains(&d) {
+                        {
+                            let mut s = state.write().await;
+                            if let Some(info) = s.steps.get_mut(&d) {
+                                info.logs.push(LogLine {
+                                    at: Utc::now(),
+                                    level: "warn".to_string(),
+                                    line: format!(
+                                        "saltado: el upstream `{}` falló — error: {}",
+                                        msg.step_id, error
+                                    ),
+                                });
+                            }
+                        }
+                        let _ = broadcaster.send(ProgressEvent::StepLog {
+                            step_id: d.clone(),
+                            line: format!(
+                                "saltado: el upstream `{}` falló — error: {}",
+                                msg.step_id, error
+                            ),
+                            level: "warn".to_string(),
+                        });
                         set_step_state(
                             &state,
                             &d,

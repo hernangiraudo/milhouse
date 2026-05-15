@@ -7,8 +7,10 @@ import {
   listUsers,
   type UserDef,
 } from "@/lib/api";
+import { useDialog } from "./Dialog";
 
 export function UsersPanel() {
+  const dialog = useDialog();
   const [users, setUsers] = useState<UserDef[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,7 +55,12 @@ export function UsersPanel() {
   }
 
   async function onDelete(name: string) {
-    if (!confirm(`¿Eliminar usuario "${name}"?`)) return;
+    const ok = await dialog.confirm(`¿Eliminar usuario "${name}"?`, {
+      title: "Eliminar usuario",
+      variant: "danger",
+      ok: "Eliminar",
+    });
+    if (!ok) return;
     setBusy(true);
     setErr(null);
     try {

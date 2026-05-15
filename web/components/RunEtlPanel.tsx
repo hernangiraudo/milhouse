@@ -11,12 +11,14 @@ import {
 } from "@/lib/api";
 import type { ConfigSummary, JobSummary } from "@/lib/types";
 import { useUser } from "@/lib/session";
+import { useDialog } from "./Dialog";
 
 type SortCol = "config" | "user" | "started_at";
 type SortDir = "asc" | "desc";
 
 export function RunEtlPanel() {
   const router = useRouter();
+  const dialog = useDialog();
   const [configs, setConfigs] = useState<ConfigSummary[]>([]);
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [selected, setSelected] = useState<string>("");
@@ -67,12 +69,11 @@ export function RunEtlPanel() {
 
   async function onDelete(j: JobSummary) {
     const cfgLabel = j.config_display_name ?? j.config_name;
-    if (
-      !confirm(
-        `¿Eliminar la ejecución ${j.job_id.slice(0, 8)} de "${cfgLabel}" y todos sus logs?`,
-      )
-    )
-      return;
+    const ok = await dialog.confirm(
+      `¿Eliminar la ejecución ${j.job_id.slice(0, 8)} de "${cfgLabel}" y todos sus logs?`,
+      { title: "Eliminar ejecución", variant: "danger", ok: "Eliminar" },
+    );
+    if (!ok) return;
     try {
       await deleteRun(j.job_id);
       checked.delete(j.job_id);
@@ -81,10 +82,11 @@ export function RunEtlPanel() {
     } catch (e) {
       if (e instanceof OpenCasesBlockError) {
         const list = e.cases.map((c) => `#${c}`).join(", ");
-        alert(
-          `⚠ No se puede eliminar la ejecución ${j.job_id.slice(0, 8)}:\n\n` +
-            `Tiene datasets adjuntos a los siguientes casos ABIERTOS: ${list}\n\n` +
+        await dialog.alert(
+          `No se puede eliminar la ejecución ${j.job_id.slice(0, 8)}.\n\n` +
+            `Tiene datasets adjuntos a los siguientes casos abiertos: ${list}\n\n` +
             `Cerralos primero desde la sección "Casos" y volvé a intentar.`,
+          { title: "Bloqueado por casos abiertos", variant: "warning" },
         );
       } else {
         setErr(String(e));
@@ -103,12 +105,11 @@ export function RunEtlPanel() {
 
   async function onDeleteSelected() {
     if (checked.size === 0) return;
-    if (
-      !confirm(
-        `¿Eliminar ${checked.size} ejecución(es) y todos sus logs? Esta acción no se puede deshacer.`,
-      )
-    )
-      return;
+    const ok = await dialog.confirm(
+      `¿Eliminar ${checked.size} ejecución(es) y todos sus logs? Esta acción no se puede deshacer.`,
+      { title: "Eliminar ejecuciones", variant: "danger", ok: "Eliminar todo" },
+    );
+    if (!ok) return;
     const blocked: Array<{ jobId: string; cases: number[] }> = [];
     let deletedAny = false;
     for (const id of Array.from(checked)) {
@@ -133,8 +134,9 @@ export function RunEtlPanel() {
             `  • ${b.jobId.slice(0, 8)} → casos abiertos: ${b.cases.map((c) => `#${c}`).join(", ")}`,
         )
         .join("\n");
-      alert(
-        `⚠ ${blocked.length} ejecución(es) no se eliminaron porque tienen datasets adjuntos a casos abiertos:\n\n${lines}\n\nCerralos primero desde "Casos".`,
+      await dialog.alert(
+        `${blocked.length} ejecución(es) no se eliminaron porque tienen datasets adjuntos a casos abiertos:\n\n${lines}\n\nCerralos primero desde "Casos".`,
+        { title: "Algunos no se eliminaron", variant: "warning" },
       );
     }
   }

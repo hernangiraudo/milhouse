@@ -256,6 +256,7 @@ async fn fire(
         cfg,
         state.pool.clone(),
         run_store,
+        crate::orchestrator::scheduler::JobOptions::default(),
     )
     .await?;
     state.jobs.insert(job_id.clone(), handle);

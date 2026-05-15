@@ -247,8 +247,42 @@ pub async fn create_job(
             tracing::info!("assigned missing step_uids and saved {}", path.display());
         }
     }
-    let job_id = Uuid::new_v4().to_string();
+    let job_id = req
+        .existing_job_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let run_store = state.run_store.read().await.clone();
+    // Si reusamos un job_id existente con subset, limpiamos los step_uids del
+    // subset para que la re-ejecución sobreescriba logs/datasets de esos pasos
+    // sin tocar los demás.
+    if req.existing_job_id.is_some() {
+        if let Some(targets) = &req.target_steps {
+            if let Some(store) = &run_store {
+                let target_uids: Vec<u32> = cfg
+                    .steps
+                    .iter()
+                    .filter(|s| targets.contains(&s.id))
+                    .filter_map(|s| s.step_uid)
+                    .collect();
+                if let Err(e) =
+                    store.clear_steps_for_rerun(&job_id, target_uids).await
+                {
+                    tracing::warn!("clear_steps_for_rerun failed: {e:#}");
+                }
+            }
+        }
+    }
+    // Si el job_id ya está en memoria (corrida anterior aún registrada), lo
+    // sacamos para reemplazarlo con el nuevo handle.
+    state.jobs.remove(&job_id);
+    let options = crate::orchestrator::scheduler::JobOptions {
+        target_steps: req
+            .target_steps
+            .as_ref()
+            .map(|v| v.iter().cloned().collect()),
+        stop_on_failure: req.stop_on_failure,
+        use_preload: req.use_preload,
+    };
     let handle = run_job(
         job_id.clone(),
         req.config_name.clone(),
@@ -257,6 +291,7 @@ pub async fn create_job(
         cfg,
         state.pool.clone(),
         run_store,
+        options,
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
@@ -484,6 +519,66 @@ pub struct TestConnectionReq {
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+}
+
+// ----- Registry de funciones Rust procedural -----
+
+pub async fn list_registry_procedural(
+    State(_state): State<AppState>,
+) -> Json<Value> {
+    let names = crate::scripting::rust_registry::global().names();
+    Json(json!({ "functions": names }))
+}
+
+// ----- Milhouse-AI -----
+
+pub async fn ai_build_step(
+    State(_state): State<AppState>,
+    Json(req): Json<crate::ai::BuildStepReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    match crate::ai::build_step(req).await {
+        Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
+        Err(e) => Err((StatusCode::BAD_REQUEST, format!("{e:#}"))),
+    }
+}
+
+pub async fn ai_available(State(_state): State<AppState>) -> Json<Value> {
+    let configured = std::env::var("ANTHROPIC_API_KEY").is_ok();
+    Json(json!({ "available": configured }))
+}
+
+// ----- Introspection -----
+
+pub async fn list_tables_endpoint(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let tables = crate::engine::introspect::list_tables(&state.pool, &name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(serde_json::to_value(tables).unwrap()))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ColumnsQuery {
+    #[serde(default)]
+    pub schema: Option<String>,
+}
+
+pub async fn list_columns_endpoint(
+    State(state): State<AppState>,
+    Path((name, table)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<ColumnsQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let cols = crate::engine::introspect::list_columns(
+        &state.pool,
+        &name,
+        &table,
+        q.schema.as_deref(),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(serde_json::to_value(cols).unwrap()))
 }
 
 pub async fn test_connection_endpoint(
@@ -1117,4 +1212,99 @@ fn df_to_xlsx(df: &polars::prelude::DataFrame) -> anyhow::Result<Vec<u8>> {
     }
     let bytes = wb.save_to_buffer()?;
     Ok(bytes)
+}
+
+// =====================================================================
+// Bundles de datasets (export / import / preload status)
+// =====================================================================
+
+/// GET /api/runs/:id/bundle  → application/zip
+/// Devuelve un .zip con todos los datasets persistidos del run.
+pub async fn export_run_bundle(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    use axum::http::header;
+    let store = run_store_or_503(&state).await?;
+    // Buscar el config_name del run para meterlo en el manifest.
+    let meta = store
+        .query(format!(
+            "SELECT config_name, config_display_name FROM runs WHERE job_id = '{}'",
+            id.replace('\'', "''")
+        ))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let (cfg_name, cfg_display) = match meta.rows.first() {
+        Some(r) => {
+            let c = r.first().and_then(|v| v.as_str()).map(String::from);
+            let d = r.get(1).and_then(|v| v.as_str()).map(String::from);
+            (c, d)
+        }
+        None => (None, None),
+    };
+    let zip = crate::runs::bundle::build_bundle(
+        store.clone(),
+        &id,
+        cfg_name.as_deref(),
+        cfg_display.as_deref(),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let filename = format!(
+        "milhouse_bundle_{}_{}.zip",
+        cfg_name.as_deref().unwrap_or("run"),
+        &id.replace('-', "")[..8.min(id.len())]
+    );
+    Ok(axum::response::Response::builder()
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(axum::body::Body::from(zip))
+        .unwrap())
+}
+
+/// POST /api/configs/:name/preload  (body: application/zip)
+/// Importa un bundle como precarga para ese config.
+pub async fn import_preload(
+    State(_state): State<AppState>,
+    Path(name): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let (manifest, target) = crate::runs::bundle::import_bundle(&body, &name)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid bundle: {e:#}")))?;
+    Ok(Json(json!({
+        "status": "ok",
+        "manifest": manifest,
+        "target_dir": target.display().to_string(),
+    })))
+}
+
+/// DELETE /api/configs/:name/preload  → quita el preload guardado.
+pub async fn delete_preload(
+    Path(name): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let dir = std::path::Path::new("data")
+        .join("preloaded")
+        .join(sanitize_for_path(&name));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))?;
+    }
+    Ok(Json(json!({ "status": "ok" })))
+}
+
+/// GET /api/configs/:name/preload  → estado del preload.
+pub async fn preload_status(Path(name): Path<String>) -> Json<Value> {
+    let has = crate::runs::bundle::has_preload(&name);
+    let steps = crate::runs::bundle::preloaded_step_ids(&name);
+    Json(json!({ "has_preload": has, "preloaded_step_ids": steps }))
+}
+
+fn sanitize_for_path(s: &str) -> String {
+    s.trim_end_matches(".json")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect()
 }
