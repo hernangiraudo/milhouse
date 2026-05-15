@@ -380,12 +380,7 @@ pub async fn reload_connections(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid connections: {e}")))?;
     let count = parsed.connections.len();
     *state.connections.write().await = parsed.clone();
-    // El ConnectionPool del AppState es Arc<...> compartido; los jobs nuevos
-    // lo usarán; los que están corriendo siguen con conexiones cacheadas.
-    // Como no podemos mutar el pool in-place, dejamos esto como limitación
-    // documentada: para que un cambio realmente se propague a sql_query con
-    // conexiones nuevas, hay que reiniciar el server. Reload solo afecta el
-    // listado API (lo que ve la UI).
+    state.pool.replace_file(parsed).await;
     Ok(Json(json!({ "status": "ok", "connections": count })))
 }
 
@@ -466,6 +461,7 @@ pub async fn create_connection(
         file.default = Some(req.name.clone());
     }
     persist_connections(&state, &file).await?;
+    state.pool.replace_file(file.clone()).await;
     *state.connections.write().await = file;
     Ok(Json(json!({ "status": "ok", "name": req.name })))
 }
@@ -493,6 +489,7 @@ pub async fn update_connection(
         file.default = Some(req.name.clone());
     }
     persist_connections(&state, &file).await?;
+    state.pool.replace_file(file.clone()).await;
     *state.connections.write().await = file;
     Ok(Json(json!({ "status": "ok", "name": req.name })))
 }
@@ -505,6 +502,7 @@ pub async fn delete_connection(
     file.remove(&name)
         .map_err(|e| (StatusCode::NOT_FOUND, format!("{e}")))?;
     persist_connections(&state, &file).await?;
+    state.pool.replace_file(file.clone()).await;
     *state.connections.write().await = file;
     Ok(StatusCode::NO_CONTENT)
 }
