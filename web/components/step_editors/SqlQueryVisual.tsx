@@ -25,11 +25,19 @@ interface OrderBy {
   desc: boolean;
 }
 
-interface WhereCond {
-  column: string;
-  op: string;
-  value: string;
-}
+type WhereCond =
+  | {
+      kind: "simple";
+      column: string;
+      op: string;
+      value: string;
+      logic: "AND" | "OR";
+    }
+  | {
+      kind: "raw";
+      expression: string;
+      logic: "AND" | "OR";
+    };
 
 export function SqlQueryVisual({
   step,
@@ -50,10 +58,24 @@ export function SqlQueryVisual({
   const [selectedCols, setSelectedCols] = useState<Set<string>>(new Set());
   const [whereConds, setWhereConds] = useState<WhereCond[]>([]);
   const [orderBy, setOrderBy] = useState<OrderBy[]>([]);
+  // Modo: "visual" sincroniza step.query desde los controles; "manual" deja
+  // editar/pegar SQL libremente y los controles visuales quedan informativos.
+  const [mode, setMode] = useState<"visual" | "manual">("visual");
 
   // Cargar conexiones.
   useEffect(() => {
     listConnections().then(setConnections).catch((e) => setErr(String(e)));
+  }, []);
+
+  // Al montar: si ya hay un query custom (no se autogeneró desde controles),
+  // arrancamos en modo manual para no pisarlo.
+  useEffect(() => {
+    const q = (step.query ?? "").trim();
+    if (q && !table) {
+      // Hay SQL pero no tenemos tabla seleccionada → query manual heredada.
+      setMode("manual");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Cuando cambia la conexión, listar sus tablas.
@@ -82,7 +104,7 @@ export function SqlQueryVisual({
       .catch((e) => setErr(String(e)));
   }, [conn, table, tables]);
 
-  // Generar SQL cada vez que cambian las selecciones; reflejar en el step.
+  // Generar SQL desde los controles visuales.
   const generatedSql = useMemo(() => {
     if (!table) return step.query ?? "";
     const colsList =
@@ -94,15 +116,9 @@ export function SqlQueryVisual({
             .map((n) => `  "${n}"`)
             .join(",\n");
     let sql = `SELECT\n${colsList}\nFROM ${table}`;
-    const validWheres = whereConds.filter(
-      (w) => w.column && w.op && w.value !== "",
-    );
+    const validWheres = whereConds.filter(isWhereCondValid);
     if (validWheres.length > 0) {
-      sql +=
-        "\nWHERE " +
-        validWheres
-          .map((w) => formatWhereCond(w))
-          .join(" AND ");
+      sql += "\nWHERE " + joinWhereWithLogic(validWheres);
     }
     if (orderBy.length > 0) {
       sql +=
@@ -114,8 +130,10 @@ export function SqlQueryVisual({
     return sql;
   }, [table, columns, selectedCols, whereConds, orderBy, step.query]);
 
-  // Sincronizar con step (sólo si cambió y el usuario está en modo visual).
+  // Sincronizar con el step SÓLO en modo visual. En manual el editor SQL es
+  // la fuente de verdad y nunca lo pisamos.
   useEffect(() => {
+    if (mode !== "visual") return;
     if (!table) return;
     onChange({
       ...step,
@@ -123,7 +141,7 @@ export function SqlQueryVisual({
       output_table: step.output_table ?? "out",
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [generatedSql, table]);
+  }, [generatedSql, table, mode]);
 
   function toggleCol(name: string) {
     const next = new Set(selectedCols);
@@ -140,15 +158,31 @@ export function SqlQueryVisual({
 
   function addWhere() {
     const first = columns[0]?.name ?? "";
-    setWhereConds([...whereConds, { column: first, op: "=", value: "" }]);
+    setWhereConds([
+      ...whereConds,
+      { kind: "simple", column: first, op: "=", value: "", logic: "AND" },
+    ]);
   }
-  function updateWhere(i: number, patch: Partial<WhereCond>) {
+  function addRawWhere() {
+    setWhereConds([
+      ...whereConds,
+      { kind: "raw", expression: "", logic: "AND" },
+    ]);
+  }
+  function updateWhere(i: number, next: WhereCond) {
     const arr = [...whereConds];
-    arr[i] = { ...arr[i], ...patch };
+    arr[i] = next;
     setWhereConds(arr);
   }
   function deleteWhere(i: number) {
     setWhereConds(whereConds.filter((_, j) => j !== i));
+  }
+  function moveWhere(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= whereConds.length) return;
+    const arr = [...whereConds];
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    setWhereConds(arr);
   }
 
   function addOrder() {
@@ -284,63 +318,150 @@ export function SqlQueryVisual({
       {/* WHERE */}
       {columns.length > 0 && (
         <div className="bg-surface-2 border border-surface rounded p-3">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
             <h5 className="text-xs uppercase tracking-wider text-muted">
               WHERE ({whereConds.length})
             </h5>
-            <button
-              type="button"
-              onClick={addWhere}
-              className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface"
-            >
-              + Condición
-            </button>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={addWhere}
+                className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface"
+              >
+                + Condición
+              </button>
+              <button
+                type="button"
+                onClick={addRawWhere}
+                title="Expresión SQL libre (ej. amount * rate > 1000)"
+                className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface"
+              >
+                + Avanzado
+              </button>
+            </div>
           </div>
           {whereConds.length === 0 ? (
             <div className="text-xs text-dim">Sin filtros.</div>
           ) : (
             <div className="space-y-1">
               {whereConds.map((w, i) => (
-                <div key={i} className="grid grid-cols-[1fr_80px_1fr_30px] gap-2">
-                  <select
-                    value={w.column}
-                    onChange={(e) => updateWhere(i, { column: e.target.value })}
-                    className="milhouse-field font-mono text-xs py-1"
-                  >
-                    {columns.map((c) => (
-                      <option key={c.name} value={c.name}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={w.op}
-                    onChange={(e) => updateWhere(i, { op: e.target.value })}
-                    className="milhouse-field text-xs py-1"
-                  >
-                    {["=", "!=", "<", "<=", ">", ">=", "LIKE", "IN", "IS NULL", "IS NOT NULL"].map(
-                      (op) => (
-                        <option key={op} value={op}>
-                          {op}
-                        </option>
-                      ),
+                <div key={i}>
+                  <div className="flex items-stretch gap-1">
+                    <div className="flex flex-col gap-0.5 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => moveWhere(i, -1)}
+                        disabled={i === 0}
+                        title="Mover arriba"
+                        className="text-[10px] text-dim disabled:opacity-20 leading-none"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveWhere(i, 1)}
+                        disabled={i === whereConds.length - 1}
+                        title="Mover abajo"
+                        className="text-[10px] text-dim disabled:opacity-20 leading-none"
+                      >
+                        ▼
+                      </button>
+                    </div>
+                    {w.kind === "simple" ? (
+                      <div className="grid grid-cols-[1fr_90px_1fr_30px] gap-2 flex-1">
+                        <select
+                          value={w.column}
+                          onChange={(e) =>
+                            updateWhere(i, { ...w, column: e.target.value })
+                          }
+                          className="milhouse-field font-mono text-xs py-1"
+                        >
+                          {columns.map((c) => (
+                            <option key={c.name} value={c.name}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={w.op}
+                          onChange={(e) =>
+                            updateWhere(i, { ...w, op: e.target.value })
+                          }
+                          className="milhouse-field text-xs py-1"
+                        >
+                          {[
+                            "=",
+                            "!=",
+                            "<",
+                            "<=",
+                            ">",
+                            ">=",
+                            "LIKE",
+                            "IN",
+                            "IS NULL",
+                            "IS NOT NULL",
+                          ].map((op) => (
+                            <option key={op} value={op}>
+                              {op}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          value={w.value}
+                          onChange={(e) =>
+                            updateWhere(i, { ...w, value: e.target.value })
+                          }
+                          disabled={w.op === "IS NULL" || w.op === "IS NOT NULL"}
+                          placeholder="valor"
+                          className="milhouse-field text-xs py-1 font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => deleteWhere(i)}
+                          className="text-red-400"
+                          title="Eliminar"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-[1fr_30px] gap-2 flex-1">
+                        <input
+                          value={w.expression}
+                          onChange={(e) =>
+                            updateWhere(i, { ...w, expression: e.target.value })
+                          }
+                          placeholder="expresión SQL · ej. amount * rate > 1000"
+                          className="milhouse-field text-xs py-1 font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => deleteWhere(i)}
+                          className="text-red-400"
+                          title="Eliminar"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     )}
-                  </select>
-                  <input
-                    value={w.value}
-                    onChange={(e) => updateWhere(i, { value: e.target.value })}
-                    disabled={w.op === "IS NULL" || w.op === "IS NOT NULL"}
-                    placeholder="valor"
-                    className="milhouse-field text-xs py-1 font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => deleteWhere(i)}
-                    className="text-red-400"
-                    title="Eliminar"
-                  >
-                    ✕
-                  </button>
+                  </div>
+                  {i < whereConds.length - 1 && (
+                    <div className="flex justify-center my-1">
+                      <select
+                        value={w.logic}
+                        onChange={(e) =>
+                          updateWhere(i, {
+                            ...w,
+                            logic: e.target.value as "AND" | "OR",
+                          })
+                        }
+                        className="milhouse-field text-[10px] py-0 px-2 w-20"
+                      >
+                        <option value="AND">AND</option>
+                        <option value="OR">OR</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -407,18 +528,55 @@ export function SqlQueryVisual({
         </div>
       )}
 
-      {/* SQL generado (read-only) + editor */}
-      <Field label="SQL generado">
+      {/* SQL: editor + toggle visual/manual */}
+      <div className="bg-surface-2 border border-surface rounded p-3 space-y-2">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h5 className="text-xs uppercase tracking-wider text-muted">
+            SQL {mode === "manual" ? "(manual)" : "(generado)"}
+          </h5>
+          <div className="flex gap-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setMode("visual")}
+              className={`px-2 py-0.5 rounded border ${
+                mode === "visual"
+                  ? "bg-accent-token border-transparent"
+                  : "bg-surface border-surface-strong"
+              }`}
+              title="Sincroniza el SQL desde los controles de arriba"
+            >
+              🪄 Visual
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("manual")}
+              className={`px-2 py-0.5 rounded border ${
+                mode === "manual"
+                  ? "bg-accent-token border-transparent"
+                  : "bg-surface border-surface-strong"
+              }`}
+              title="Editar SQL libre — los controles no lo pisan (ideal para pegar un SELECT)"
+            >
+              ✎ SQL manual
+            </button>
+          </div>
+        </div>
         <SqlEditor
           value={step.query ?? ""}
-          onChange={(v) => onChange({ ...step, query: v })}
+          onChange={(v) => {
+            // Si el usuario tipea en el editor, lo interpretamos como
+            // "quiero modo manual" para no perder lo escrito al próximo render.
+            if (mode === "visual") setMode("manual");
+            onChange({ ...step, query: v });
+          }}
           height="220px"
         />
-        <p className="text-[11px] text-dim mt-1">
-          Podés editarlo a mano. Si editás manual, los controles visuales no
-          se vuelven a aplicar hasta que cambies tabla/columnas.
+        <p className="text-[11px] text-dim">
+          {mode === "manual"
+            ? "Modo manual: pegá o editá el SELECT libremente. Los controles visuales quedan informativos."
+            : "Modo visual: el SQL se reconstruye desde los controles de arriba. Si pegás algo a mano, cambia automáticamente a manual."}
         </p>
-      </Field>
+      </div>
     </div>
   );
 }
@@ -426,7 +584,20 @@ export function SqlQueryVisual({
 function qualifiedTable(t: TableInfo): string {
   return t.schema ? `${t.schema}.${t.name}` : t.name;
 }
+
+function isWhereCondValid(w: WhereCond): boolean {
+  if (w.kind === "raw") return w.expression.trim().length > 0;
+  if (!w.column || !w.op) return false;
+  if (w.op === "IS NULL" || w.op === "IS NOT NULL") return true;
+  return w.value !== "";
+}
+
 function formatWhereCond(w: WhereCond): string {
+  if (w.kind === "raw") {
+    // Si tiene operadores lógicos sueltos, lo envolvemos en paréntesis.
+    const e = w.expression.trim();
+    return /\b(AND|OR)\b/i.test(e) ? `(${e})` : e;
+  }
   if (w.op === "IS NULL" || w.op === "IS NOT NULL") {
     return `"${w.column}" ${w.op}`;
   }
@@ -436,6 +607,18 @@ function formatWhereCond(w: WhereCond): string {
   const isList = w.op === "IN" && v.startsWith("(");
   if (isNum || isList) return `"${w.column}" ${w.op} ${v}`;
   return `"${w.column}" ${w.op} '${v.replace(/'/g, "''")}'`;
+}
+
+/** Junta las condiciones intercalando AND/OR según el `logic` de la
+ *  condición previa (operador hacia la siguiente). */
+function joinWhereWithLogic(conds: WhereCond[]): string {
+  if (conds.length === 0) return "";
+  const parts: string[] = [formatWhereCond(conds[0])];
+  for (let i = 1; i < conds.length; i++) {
+    const prev = conds[i - 1];
+    parts.push(prev.logic, formatWhereCond(conds[i]));
+  }
+  return parts.join(" ");
 }
 
 function Field({
