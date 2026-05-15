@@ -55,35 +55,70 @@ impl OpenedConnection {
 
 /// Pool de conexiones declaradas en `connections.json`. Abre cada conexión
 /// la primera vez que se usa y la deja cacheada por nombre.
+///
+/// El `file` está bajo `RwLock` para que la API pueda actualizarlo cuando el
+/// usuario crea/edita/borra conexiones desde la UI sin tener que reiniciar
+/// el server. Las conexiones ya abiertas se siguen reusando vía cache; las
+/// modificadas o borradas se eliminan del cache para que la próxima apertura
+/// use la nueva spec.
 pub struct ConnectionPool {
-    file: ConnectionsFile,
+    file: tokio::sync::RwLock<ConnectionsFile>,
     cache: Mutex<HashMap<String, Arc<OpenedConnection>>>,
 }
 
 impl ConnectionPool {
     pub fn new(file: ConnectionsFile) -> Self {
         Self {
-            file,
+            file: tokio::sync::RwLock::new(file),
             cache: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn file(&self) -> &ConnectionsFile {
-        &self.file
+    pub async fn snapshot_file(&self) -> ConnectionsFile {
+        self.file.read().await.clone()
     }
 
-    pub fn default_name(&self) -> Option<&str> {
-        self.file.default.as_deref()
+    pub async fn default_name(&self) -> Option<String> {
+        self.file.read().await.default.clone()
+    }
+
+    /// Reemplaza el archivo de conexiones (típicamente tras un CRUD por API)
+    /// e invalida el cache de las conexiones que dejaron de existir o cambiaron.
+    pub async fn replace_file(&self, new_file: ConnectionsFile) {
+        let old_specs: HashMap<String, crate::config::Connection> = {
+            let guard = self.file.read().await;
+            guard.lookup_map()
+        };
+        {
+            let mut w = self.file.write().await;
+            *w = new_file;
+        }
+        // Invalidar cache: si una conexión desapareció o su spec cambió,
+        // sacarla del cache para que la próxima apertura use la nueva.
+        let new_specs: HashMap<String, crate::config::Connection> = {
+            let guard = self.file.read().await;
+            guard.lookup_map()
+        };
+        let mut cache = self.cache.lock().await;
+        cache.retain(|name, _| match new_specs.get(name) {
+            None => false,
+            Some(new_def) => {
+                // Si la spec interna no cambió, mantener; si sí, invalidar.
+                match old_specs.get(name) {
+                    Some(old) => same_spec(old, new_def),
+                    None => true,
+                }
+            }
+        });
     }
 
     /// Devuelve la conexión abierta (cualquier tipo) para el nombre dado
     /// (o la default si es None). Abre lazy y cachea.
     pub async fn get_any(&self, name: Option<&str>) -> Result<Arc<OpenedConnection>> {
-        let conn_def = self
-            .file
-            .resolve(name)
-            .map_err(|e| anyhow!("{e}"))?
-            .clone();
+        let conn_def = {
+            let guard = self.file.read().await;
+            guard.resolve(name).map_err(|e| anyhow!("{e}"))?.clone()
+        };
         let key = conn_def.name.clone();
         let mut cache = self.cache.lock().await;
         if let Some(existing) = cache.get(&key) {
@@ -106,6 +141,16 @@ impl ConnectionPool {
             )),
         }
     }
+}
+
+/// Compara si dos definiciones de conexión apuntan al mismo backend con
+/// los mismos parámetros (ignora `description`, sólo nos importa lo que
+/// afecta a la apertura).
+fn same_spec(a: &Connection, b: &Connection) -> bool {
+    // Serializar el kind a JSON y comparar — más liviano que implementar PartialEq manual.
+    let aj = serde_json::to_value(&a.kind).unwrap_or(serde_json::Value::Null);
+    let bj = serde_json::to_value(&b.kind).unwrap_or(serde_json::Value::Null);
+    aj == bj
 }
 
 async fn open_connection(conn: &Connection) -> Result<OpenedConnection> {
