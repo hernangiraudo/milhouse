@@ -14,35 +14,10 @@
       "path": "data/milhouse_runs.duckdb"
     },
     {
-      "name": "scratch",
-      "description": "DuckDB en memoria para pruebas rápidas.",
-      "type": "duckdb_memory"
-    },
-    {
-      "name": "VBolsa",
-      "description": "VBolsa",
-      "type": "sql_server",
-      "host": "localhost",
-      "port": 1433,
-<<<<<<< HEAD
-      "user": "hgiraudo",
-      "password": "hg741852+",
-      "database": "VBolsa",
-      "encrypt": "off",
-      "trust_server_certificate": true
-    },
-    {
-      "name": "VBolsa-DuckDB",
-      "description": null,
-      "type": "duckdb",
-      "path": "data/mi_db.duckdb"
-=======
-      "user": "etl_reader",
-      "password": null,
-      "database": "ERP",
-      "encrypt": "on",
-      "trust_server_certificate": false
->>>>>>> 278e412b22ed44fa2d0a1a3bf2c027f663156487
+      "name": "legacy_sqlite",
+      "description": "Placeholder: SQLite legado (no implementado en este MVP).",
+      "type": "sqlite",
+      "path": "data/legacy.sqlite"
     }
   ]
 }
