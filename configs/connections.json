@@ -19,30 +19,22 @@
       "type": "duckdb_memory"
     },
     {
-      "name": "analytics_pg",
-      "description": "Placeholder: Postgres analítico (no implementado en este MVP).",
-      "type": "postgres",
-      "host": "localhost",
-      "port": 5432,
-      "user": "analytics",
-      "password": null,
-      "database": "warehouse"
-    },
-    {
-      "name": "legacy_sqlite",
-      "description": "Placeholder: SQLite legado (no implementado en este MVP).",
-      "type": "sqlite",
-      "path": "data/legacy.sqlite"
-    },
-    {
-      "name": "erp_mssql",
-      "description": "Placeholder: SQL Server del ERP (no implementado en este MVP).",
+      "name": "VBolsa",
+      "description": "VBolsa",
       "type": "sql_server",
-      "host": "mssql.internal",
+      "host": "localhost",
       "port": 1433,
-      "user": "etl_reader",
-      "password": null,
-      "database": "ERP"
+      "user": "hgiraudo",
+      "password": "hg741852+",
+      "database": "VBolsa",
+      "encrypt": "off",
+      "trust_server_certificate": true
+    },
+    {
+      "name": "VBolsa-DuckDB",
+      "description": null,
+      "type": "duckdb",
+      "path": "data/mi_db.duckdb"
     }
   ]
 }
