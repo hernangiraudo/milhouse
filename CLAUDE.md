@@ -79,6 +79,11 @@ src/
     global_params.rs      GlobalParamsFile (configs/parameters.json):
                           parámetros y respuestas COMPARTIDOS entre
                           proyectos. Path env: MILHOUSE_GLOBAL_PARAMS_PATH.
+    constants.rs          GlobalConstantsFile (configs/constants.json):
+                          códigos canónicos compartidos entre proyectos
+                          (kind number|text|raw_sql), referenciados como
+                          `:Grupo.Nombre`. Path env:
+                          MILHOUSE_GLOBAL_CONSTANTS_PATH.
     users.rs              UsersFile (users.json)
   engine/
     context.rs            TableStore, ConnectionPool, StepContext,
@@ -321,6 +326,8 @@ POST   /api/sql/check                              valida sintaxis sin
 GET    /api/parameters                              parámetros + presets globales
 PUT    /api/parameters                              reemplaza todo + persiste
 POST   /api/parameters/parse-excel                 lee 1ª columna del xlsx
+GET    /api/constants                               constantes globales {groups, constants}
+PUT    /api/constants                               reemplaza todo + persiste
 POST   /api/ai/build-step                          NL → step JSON
 POST   /api/ai/review-sql                          sugerencias sobre un SQL
 GET    /api/ai/available                           {available: bool}
@@ -407,12 +414,18 @@ step_sql_session, job_eta, job_finished
   downstream sin reejecutar sus fuentes.
 - Panel "Ejecución" debajo del lienzo con tabs Logs / Datos de salida
   para el paso seleccionado.
-- **Cola de ejecución en vivo** (`RunQueuePanel`): visible mientras hay
-  job activo. Buckets Ejecutando / Esperando / Terminadas / Fallidas /
-  Canceladas / Salteadas. Cada paso muestra `SPID NN` en cyan cuando
-  está corriendo contra SQL Server. Botones globales: **⏸ Drenar**
-  (cancela pendientes, deja terminar Running), **⏹ Cancelar todo**.
-  Botón ✕ por paso para cancelar uno (en Running con SPID, manda KILL).
+- **Cola de ejecución en vivo** (`RunQueuePanel`): aparece al lanzar y
+  **persiste después de terminar** (no se auto-cierra). Buckets
+  Ejecutando / Esperando / Terminadas / Fallidas / Canceladas /
+  Salteadas. Cada item Running muestra clock vivo (`1.2 s` / `2m 30s`,
+  tick 1s) y `SPID NN` en cyan si la query corre contra SQL Server.
+  Cada item Done muestra `N filas · duración` (formato es-AR). Header
+  con totales `· N filas · Σ duración`. Botones globales mientras está
+  activo: **⏸ Drenar pendientes**, **⏹ Cancelar todo**. Botón ✕ por
+  paso (Running con SPID dispara `KILL`). Cuando termina, el panel
+  esconde los botones de cancelar y muestra **"✕ Limpiar y cerrar"**
+  que borra el estado local — los datos persistidos siguen disponibles
+  en Revisión.
 - **Parámetros de ejecución del proyecto** (sub-bloque en Propiedades):
   `settings.max_parallel_steps` — input numérico. Vacío = sin límite;
   `1` = serial. El scheduler respeta este cap al spawnear; los ready
@@ -424,7 +437,12 @@ step_sql_session, job_eta, job_finished
 - **Nodos importados de bundle**: badge "📦 IMPORTADO" con borde cyan
   punteado en el lienzo. Al importar, se lanza un job parcial que sólo
   "ejecuta" los preloadeados (refresca state visual + persiste datasets).
-- Export/import zip de datasets de una corrida (offline dev).
+- Export/import zip de datasets de una corrida (offline dev). El botón
+  "⬇ Exportar bundle" usa `activeJobId ?? lastJobId` así sigue habilitado
+  después de que el job terminó. Si hay pasos `sql_query`/`sql_exec`
+  raíz (sin `depends_on`) sin datos en la última corrida, dialog de
+  confirmación listándolos: "El bundle se exporta igual, quien lo
+  importe tendrá que ejecutar esos pasos contra una base".
 
 ### Editor SQL
 - Modo visual (selects/where/order) **+ modo manual** que conserva el
@@ -474,6 +492,13 @@ step_sql_session, job_eta, job_finished
 ### Otras secciones del sidebar
 - **Parámetros de Ejecución**: editor de parámetros + presets GLOBALES
   (compartidos entre proyectos). Persiste en `configs/parameters.json`.
+- **Constantes**: códigos canónicos globales (`configs/constants.json`).
+  Agrupables. 3 kinds: `number` (sin quotes), `text` (con quotes y escape
+  de `'`) y `raw_sql` (fragmento literal — útil para filtros reutilizables
+  como `(GrupoID = 3004)`). Referencia en SQL: `:Grupo.Nombre`
+  (`:Nombre` si está sin grupo). El motor agrega los constants al
+  `ResolvedParams`; el parser de `engine/params.rs` acepta `:ident.ident`.
+  Param de proyecto pisa a constante en caso de colisión por nombre.
 - Casos: CRUD, comentarios, severidad, assignee, datasets adjuntos.
 - Planificación: at|window|cron (worker tokio cada 60s).
 - Conexiones: CRUD con test, default, propaga cambios al pool sin
@@ -505,6 +530,10 @@ step_sql_session, job_eta, job_finished
   tema claro usa **slate-300** sobre paneles blancos con borde
   slate-500 y texto slate-950 — slate-200 quedaba indistinguible
   del panel.
+- **`.milhouse-btn-imported`**: clase del botón "Ejecutar desde Datos
+  Importados". En light: cyan-700 con texto blanco y borde cyan-800
+  (contraste fuerte sobre paneles blancos). En dark: cyan transparente
+  con texto cyan-100 (sutil, no compite con el accent principal).
 - **`SamplePanel`** (tabla de resultados): clase utilitaria
   `.milhouse-data-table` con header sticky, banding alterno usando
   tokens `--panel` / `--panel-2`, hover con accent sutil. Números
@@ -726,39 +755,37 @@ Variables de entorno opcionales:
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
-- **Bundle offline funcional**: backend salta validaciones de
-  conexión/`:param` para steps preloadeados; scheduler marca los
-  preloadeados como `Done` con sample real (no Skipped) y persiste
-  el dataset si `debug=true`. En el front: botón **"📦 ▶ Ejecutar
-  desde Datos Importados"** (corre todo salvo los preloadeados),
-  nodos importados con badge "📦 IMPORTADO" + borde cyan punteado,
-  refresco automático del estado al importar (lanza job parcial sólo
-  sobre los preloadeados).
-- **Fechas tipadas + truncado a Date por default**: tiberius via
-  `FromSql` chrono → polars `Date`/`Datetime(µs)`.
-  `normalize_temporal_columns` castea Datetime → Date salvo las listadas
-  en `sql_query.keep_time_columns`. UI muestra `dd/mm/yyyy` (oculta la
-  parte horaria si es 00:00:00). Editor visual con sección "Columnas con
-  hora" (checkbox por columna datetime detectada).
-- **Setup_and_run robusto**: `scripts/lib_ports.sh|ps1` con detección
-  portable de procesos en :8090/:3000 (lsof / fuser / netstat según OS).
-  `setup_and_run.*` libera puertos antes del `cargo build` (evita
-  "Access is denied" en Windows si milhouse.exe ya corre). `start.*`
-  espera al frontend y abre el browser solo. Flags `--force` /
-  `--no-browser`.
-- **Cap de paralelismo por proyecto** (`cfg.settings.max_parallel_steps`):
-  editor en Propiedades del proyecto. Scheduler respeta el cap al
-  spawnear.
-- **Cola de ejecución en vivo** (`RunQueuePanel`): buckets por estado,
-  botones Drenar / Cancelar todo / ✕ por paso. Endpoints nuevos:
-  `POST /api/jobs/:id/drain` y `POST /api/jobs/:id/cancel-step/:step_id`.
-  Control granular via `JobControl { drain, cancel_step_ids, notify }`
-  con `tokio::select!` en el supervisor.
-- **KILL real de SQL Server al cancelar Running**: captura de `@@SPID`
-  en el mismo lease antes del query. `StepInfo.sql_session` se emite
-  como evento WS `step_sql_session`. Al cancelar un step Running con
-  `sql_session`, se manda `KILL <SPID>` via lease paralelo del pool.
-  UI muestra badge `SPID NN` cyan en la cola.
+- **Constantes globales** (nueva sección "📐 Constantes" en el sidebar).
+  `configs/constants.json` con `groups[]` + `constants[]{name, group?,
+  kind, value, description?}`. 3 kinds: `number`, `text`, `raw_sql`
+  (útil para filtros reutilizables tipo `(GrupoID = 3004)`).
+  Referencia en SQL: `:Grupo.Nombre` (o `:Nombre` sin grupo). El
+  parser de `engine/params.rs` acepta `:ident.ident`. `ResolvedParams`
+  ahora también guarda constantes; render con prioridad
+  param > constante en colisión. Endpoints `GET|PUT /api/constants`.
+  AppState con `global_constants` (RwLock) + path env
+  `MILHOUSE_GLOBAL_CONSTANTS_PATH`. `JobOptions.constants` snapshot
+  en cada lanzamiento.
+- **Alineación numérica en tablas**: `SamplePanel` corrige bug del
+  `<th>` con `text-left` + `text-right` simultáneos (gana ahora el
+  condicional). `RunsReviewPanel` recibe `align` en `Th`/`SortableTh`/
+  `Td`; UID/Pasos/Filas/Duración/Tamaño van `text-right tabular-nums`.
+  Filas con separador es-AR.
+- **Flechas que pasan por la tabla**: en modo "nodos + tablas" del
+  lienzo, la flecha de dependencia entre dos pasos sale del borde
+  derecho del card de la tabla de salida (no del puerto del nodo) si
+  el origen tiene `output_table`. En modo solo-nodos o si no hay
+  tabla, sigue saliendo del nodo.
+- **Cola de ejecución con métricas y persistencia** (tanda previa):
+  clock vivo en Running, `N filas · duración` en Done, totales,
+  no auto-cierre + botón "Limpiar y cerrar".
+- **Exportar bundle siempre habilitado** (tanda previa): `activeJobId ??
+  lastJobId`, aviso por pasos SQL raíz sin datos.
+- **`.milhouse-btn-imported`** (tanda previa): contraste por tema.
+- **Cap de paralelismo + cola en vivo + KILL real** (tanda previa).
+- **Fechas tipadas + truncado a Date por default** (tanda previa).
+- **Bundle offline funcional** (tanda previa).
+- **Setup_and_run robusto** (tanda previa).
 
 Pendientes mencionados pero NO implementados (preguntá antes de empezarlos):
 - **Sección Debug**: navegador read-only sobre runs históricas con
@@ -815,6 +842,8 @@ Pendientes mencionados pero NO implementados (preguntá antes de empezarlos):
 - `src/runs/mod.rs` (RunStore + roadmap + bundle + case-insensitive lookup
   de la conexión `runs`)
 - `src/config/schema.rs` (EtlConfig, ParamSpec/Preset/ApiConfig)
+- `src/config/constants.rs` (GlobalConstantsFile, render_sql por kind,
+  `:Grupo.Nombre` resolution)
 - `src/config/global_params.rs` (GlobalParamsFile, read/write
   `configs/parameters.json`)
 - `web/app/page.tsx` (sidebar)

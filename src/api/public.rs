@@ -137,11 +137,13 @@ pub async fn run_project(
 
     let job_id = Uuid::new_v4().to_string();
     let run_store = state.run_store.read().await.clone();
+    let constants = state.global_constants.read().await.constants.clone();
     let options = crate::orchestrator::scheduler::JobOptions {
         target_steps: None,
         stop_on_failure: true,
         use_preload: false,
         params: parameters,
+        constants,
         run_name: None,
     };
     let handle = crate::orchestrator::run_job(

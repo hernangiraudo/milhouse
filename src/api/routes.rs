@@ -268,6 +268,65 @@ pub async fn put_global_params(
     Ok(Json(json!({ "status": "ok" })))
 }
 
+// =====================================================================
+// Constantes globales (compartidas entre proyectos)
+// =====================================================================
+
+/// GET /api/constants → {groups, constants}
+pub async fn get_global_constants(State(state): State<AppState>) -> Json<Value> {
+    let g = state.global_constants.read().await.clone();
+    Json(serde_json::to_value(&g).unwrap_or(Value::Null))
+}
+
+/// PUT /api/constants → reemplaza completo + persiste.
+pub async fn put_global_constants(
+    State(state): State<AppState>,
+    Json(body): Json<crate::config::GlobalConstantsFile>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    // Validar nombres únicos por (grupo, nombre).
+    let mut seen = std::collections::HashSet::new();
+    for c in &body.constants {
+        if c.name.trim().is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "hay constantes sin nombre".into(),
+            ));
+        }
+        let key = c.full_name();
+        if !seen.insert(key.clone()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("constante duplicada: {key}"),
+            ));
+        }
+    }
+    // Validar nombres únicos de grupo.
+    let mut seen_groups = std::collections::HashSet::new();
+    for g in &body.groups {
+        if g.name.trim().is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "hay grupos sin nombre".into(),
+            ));
+        }
+        if !seen_groups.insert(g.name.clone()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("grupo duplicado: {}", g.name),
+            ));
+        }
+    }
+    let path = std::path::PathBuf::from(&state.global_constants_path);
+    body.save(&path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("escribir {}: {e}", path.display()),
+        )
+    })?;
+    *state.global_constants.write().await = body;
+    Ok(Json(json!({ "status": "ok" })))
+}
+
 pub async fn parse_excel_for_param(
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, (StatusCode, String)> {
@@ -374,6 +433,17 @@ pub fn scan_param_refs(text: &str) -> Vec<String> {
             while end < n {
                 let ch = bytes[end] as char;
                 if ch.is_ascii_alphanumeric() || ch == '_' { end += 1; } else { break; }
+            }
+            // Soportar referencias agrupadas `:Grupo.Nombre` (constantes).
+            if end < n && bytes[end] as char == '.'
+                && end + 1 < n
+                && (bytes[end + 1] as char).is_ascii_alphabetic()
+            {
+                end += 1;
+                while end < n {
+                    let ch = bytes[end] as char;
+                    if ch.is_ascii_alphanumeric() || ch == '_' { end += 1; } else { break; }
+                }
             }
             out.push(text[i + 1..end].to_string());
             i = end;
@@ -513,11 +583,24 @@ pub async fn create_job(
                 }
                 _ => continue,
             };
+            // Constantes globales conocidas (resueltas por full_name).
+            let constants_set: std::collections::HashSet<String> = state
+                .global_constants
+                .read()
+                .await
+                .constants
+                .iter()
+                .map(|c| c.full_name())
+                .collect();
             for t in texts {
                 for name in scan_param_refs(t) {
-                    if !req.parameters.contains_key(&name) {
-                        missing_params.insert(name);
+                    if req.parameters.contains_key(&name) {
+                        continue;
                     }
+                    if constants_set.contains(&name) {
+                        continue;
+                    }
+                    missing_params.insert(name);
                 }
             }
         }
@@ -561,6 +644,8 @@ pub async fn create_job(
     // Si el job_id ya está en memoria (corrida anterior aún registrada), lo
     // sacamos para reemplazarlo con el nuevo handle.
     state.jobs.remove(&job_id);
+    // Constantes globales a inyectar (snapshot del momento de lanzar).
+    let constants = state.global_constants.read().await.constants.clone();
     let options = crate::orchestrator::scheduler::JobOptions {
         target_steps: req
             .target_steps
@@ -569,6 +654,7 @@ pub async fn create_job(
         stop_on_failure: req.stop_on_failure,
         use_preload: req.use_preload,
         params: req.parameters.clone(),
+        constants,
         run_name: req.run_name.clone(),
     };
     let handle = run_job(

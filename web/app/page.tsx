@@ -9,6 +9,7 @@ import { CasesPanel } from "@/components/CasesPanel";
 import { SchedulesPanel } from "@/components/SchedulesPanel";
 import { DesignPanel } from "@/components/DesignPanel";
 import { ExecParamsPanel } from "@/components/ExecParamsPanel";
+import { ConstantsPanel } from "@/components/ConstantsPanel";
 import { RoadmapPanel } from "@/components/RoadmapPanel";
 import { SqlMonitorPanel } from "@/components/SqlMonitorPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -17,6 +18,7 @@ import { UserChip } from "@/components/LoginGate";
 type Section =
   | "design"
   | "exec_params"
+  | "constants"
   | "run"
   | "schedules"
   | "review"
@@ -29,6 +31,7 @@ type Section =
 const SECTIONS: Array<{ id: Section; label: string; icon: string }> = [
   { id: "design", label: "Diseño", icon: "✏️" },
   { id: "exec_params", label: "Parámetros de Ejecución", icon: "⚙️" },
+  { id: "constants", label: "Constantes", icon: "📐" },
   { id: "run", label: "Ejecutar proyecto", icon: "▶" },
   { id: "schedules", label: "Planificación", icon: "⏱" },
   { id: "review", label: "Revisión de logs", icon: "📜" },
@@ -90,6 +93,7 @@ export default function Home() {
         <div className="flex-1 overflow-auto p-8 max-w-7xl w-full mx-auto">
           {section === "design" && <DesignPanel />}
           {section === "exec_params" && <ExecParamsPanel />}
+          {section === "constants" && <ConstantsPanel />}
           {section === "run" && <RunEtlPanel />}
           {section === "schedules" && <SchedulesPanel />}
           {section === "review" && <RunsReviewPanel />}

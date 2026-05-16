@@ -769,7 +769,22 @@ export function DesignCanvas({
             const fromLayout = layout.nodeIndex[fromUnit];
             if (!fromLayout) return null;
             if (fromUnit === toUnit) return null;
-            const ax = fromLayout.x + fromLayout.w;
+            // Si estamos en modo "nodos + tablas" y el step origen tiene
+            // output_table, la dependencia conceptualmente viaja a través
+            // de esa tabla → la flecha sale del borde derecho del card
+            // de la tabla en vez del puerto del nodo. Si no hay tabla (o
+            // estamos en modo solo-nodos), la flecha sale del nodo como
+            // siempre.
+            const showsTable =
+              viewMode === "nodes_and_tables" &&
+              !!(dStep as Step & { output_table?: string } | undefined)
+                ?.output_table &&
+              fromUnit === d; // los grupos colapsados no muestran tabla
+            const TBL_GAP = 18;
+            const TBL_W = 90;
+            const ax = showsTable
+              ? fromLayout.x + fromLayout.w + TBL_GAP + TBL_W
+              : fromLayout.x + fromLayout.w;
             const ay = fromLayout.y + fromLayout.h / 2;
             const bx = toLayout.x;
             const by = toLayout.y + toLayout.h / 2;

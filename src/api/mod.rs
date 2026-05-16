@@ -3,7 +3,7 @@ pub mod public;
 pub mod routes;
 pub mod ws;
 
-use crate::config::{ConnectionsFile, GlobalParamsFile, UsersFile};
+use crate::config::{ConnectionsFile, GlobalConstantsFile, GlobalParamsFile, UsersFile};
 use crate::engine::ConnectionPool;
 use crate::orchestrator::JobHandle;
 use crate::runs::RunStore;
@@ -27,4 +27,7 @@ pub struct AppState {
     /// Parámetros y respuestas globales (compartidos entre proyectos).
     pub global_params: Arc<RwLock<GlobalParamsFile>>,
     pub global_params_path: String,
+    /// Constantes globales (códigos canónicos compartidos entre proyectos).
+    pub global_constants: Arc<RwLock<GlobalConstantsFile>>,
+    pub global_constants_path: String,
 }

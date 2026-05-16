@@ -96,6 +96,10 @@ pub struct JobOptions {
     pub use_preload: bool,
     /// Valores resueltos de parámetros para esta ejecución (`:nombre` → valor).
     pub params: std::collections::HashMap<String, crate::config::ParamValue>,
+    /// Constantes globales para sustitución `:Grupo.Nombre`. Se pasan por
+    /// valor para que la ejecución sea reproducible aunque el archivo
+    /// cambie en runtime.
+    pub constants: Vec<crate::config::ConstantSpec>,
     /// Etiqueta opcional para identificar esta corrida.
     pub run_name: Option<String>,
 }
@@ -282,11 +286,12 @@ async fn supervisor_and_scheduler(
         cfg.steps.iter().map(|s| (s.id.clone(), s.clone())).collect();
 
     // Construir ResolvedParams una vez por job: specs del config + valores
-    // del request. Compartido entre todos los StepContext via Arc.
-    let resolved_params = Arc::new(crate::engine::params::ResolvedParams::new(
-        &cfg.parameters,
-        options.params.clone(),
-    ));
+    // del request + constantes globales. Compartido entre todos los
+    // StepContext via Arc.
+    let resolved_params = Arc::new(
+        crate::engine::params::ResolvedParams::new(&cfg.parameters, options.params.clone())
+            .with_constants(&options.constants),
+    );
 
     let (tx, mut rx) = mpsc::channel::<StepUpdateMsg>(1024);
 

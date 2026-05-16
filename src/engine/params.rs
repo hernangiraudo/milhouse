@@ -10,15 +10,18 @@
 //! - Si el texto referencia un parámetro que no está resuelto, devuelve
 //!   Err con el nombre del parámetro faltante.
 
-use crate::config::{ParamKind, ParamSpec, ParamValue};
+use crate::config::{ConstantSpec, ParamKind, ParamSpec, ParamValue};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
-/// Contexto resuelto para una ejecución: specs (para saber el tipo) + valores.
+/// Contexto resuelto para una ejecución: specs (para saber el tipo) + valores
+/// de parámetros, más constantes globales (sustitución `:Grupo.Nombre`).
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedParams {
     pub specs: HashMap<String, ParamSpec>,
     pub values: HashMap<String, ParamValue>,
+    /// Constantes indexadas por `full_name` (`Grupo.Nombre` o `Nombre`).
+    pub constants: HashMap<String, ConstantSpec>,
 }
 
 impl ResolvedParams {
@@ -30,12 +33,19 @@ impl ResolvedParams {
         Self {
             specs: specs_map,
             values,
+            constants: HashMap::new(),
         }
     }
 
-    /// True si no hay parámetros declarados ni valores — el texto se devuelve tal cual.
+    /// Agrega constantes globales al contexto. Builder-style.
+    pub fn with_constants(mut self, constants: &[ConstantSpec]) -> Self {
+        self.constants = constants.iter().map(|c| (c.full_name(), c.clone())).collect();
+        self
+    }
+
+    /// True si no hay parámetros declarados ni valores ni constantes — el texto se devuelve tal cual.
     pub fn is_empty(&self) -> bool {
-        self.specs.is_empty() && self.values.is_empty()
+        self.specs.is_empty() && self.values.is_empty() && self.constants.is_empty()
     }
 }
 
@@ -149,10 +159,21 @@ pub fn substitute(text: &str, params: &ResolvedParams) -> Result<String> {
                         i += 1;
                         continue;
                     }
-                    // Leer el nombre.
+                    // Leer el nombre. Aceptamos un `.ident` opcional para
+                    // referencias a constantes agrupadas (`:Grupo.Nombre`).
                     let mut end = i + 1;
                     while end < n && is_ident_cont(bytes[end] as char) {
                         end += 1;
+                    }
+                    if end < n
+                        && bytes[end] as char == '.'
+                        && end + 1 < n
+                        && is_ident_start(bytes[end + 1] as char)
+                    {
+                        end += 1; // consumir `.`
+                        while end < n && is_ident_cont(bytes[end] as char) {
+                            end += 1;
+                        }
                     }
                     let name = &text[i + 1..end];
                     // Sustituir.
@@ -177,20 +198,31 @@ fn is_ident_cont(c: char) -> bool {
 }
 
 fn render_param(name: &str, params: &ResolvedParams, out_so_far: &str) -> Result<String> {
-    let value = params
-        .values
-        .get(name)
-        .ok_or_else(|| anyhow!("parámetro `:{}` no resuelto", name))?;
-    let spec = params.specs.get(name);
-    let kind = spec.map(|s| s.kind);
-    let quote = match kind {
-        Some(ParamKind::Number) | Some(ParamKind::ListNumber) => false,
-        _ => true,
-    };
-    // Detectar contexto IN(...): si lo último no-blanco de out_so_far es `(`
-    // y antes (ignorando espacios) hay `IN`, estamos dentro de un IN.
-    let in_context = detect_in_context(out_so_far);
-    Ok(value.render_sql(quote, in_context))
+    // Resolución:
+    //   1. Si el nombre tiene `.`, sólo busca en constantes (`Grupo.Nombre`).
+    //   2. Sin `.`: busca primero como parámetro (más específico al proyecto),
+    //      después como constante sin grupo. El parámetro gana al colisionar.
+    if name.contains('.') {
+        let c = params
+            .constants
+            .get(name)
+            .ok_or_else(|| anyhow!("constante `:{}` no resuelta", name))?;
+        return Ok(c.render_sql());
+    }
+    if let Some(value) = params.values.get(name) {
+        let spec = params.specs.get(name);
+        let kind = spec.map(|s| s.kind);
+        let quote = match kind {
+            Some(ParamKind::Number) | Some(ParamKind::ListNumber) => false,
+            _ => true,
+        };
+        let in_context = detect_in_context(out_so_far);
+        return Ok(value.render_sql(quote, in_context));
+    }
+    if let Some(c) = params.constants.get(name) {
+        return Ok(c.render_sql());
+    }
+    Err(anyhow!("parámetro `:{}` no resuelto", name))
 }
 
 fn detect_in_context(s: &str) -> bool {

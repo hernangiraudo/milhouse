@@ -42,8 +42,8 @@ export function SamplePanel({ sample }: { sample: TableSample | null | undefined
                 <th
                   key={c.name}
                   className={
-                    "px-3 py-1.5 text-left font-medium align-bottom whitespace-nowrap " +
-                    (isNumericKind(colKinds[idx]) ? "text-right" : "")
+                    "px-3 py-1.5 font-medium align-bottom whitespace-nowrap " +
+                    (isNumericKind(colKinds[idx]) ? "text-right" : "text-left")
                   }
                 >
                   <div className="text-app">{c.name}</div>

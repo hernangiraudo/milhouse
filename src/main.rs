@@ -27,6 +27,8 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("MILHOUSE_USERS_PATH").unwrap_or_else(|_| "configs/users.json".into());
     let global_params_path = std::env::var("MILHOUSE_GLOBAL_PARAMS_PATH")
         .unwrap_or_else(|_| "configs/parameters.json".into());
+    let global_constants_path = std::env::var("MILHOUSE_GLOBAL_CONSTANTS_PATH")
+        .unwrap_or_else(|_| "configs/constants.json".into());
 
     let connections = load_connections_or_warn(&connections_path);
     let users = load_users_or_warn(&users_path);
@@ -38,6 +40,15 @@ async fn main() -> anyhow::Result<()> {
         global_params.parameters.len(),
         global_params.presets.len(),
         global_params_path
+    );
+    let global_constants = milhouse::config::GlobalConstantsFile::load_or_empty(
+        std::path::Path::new(&global_constants_path),
+    );
+    tracing::info!(
+        "loaded {} global constant(s) ({} group/s) from {}",
+        global_constants.constants.len(),
+        global_constants.groups.len(),
+        global_constants_path
     );
 
     // Pool compartido del servidor (los jobs harán su propio pool actualizado
@@ -63,6 +74,8 @@ async fn main() -> anyhow::Result<()> {
         run_store: Arc::new(RwLock::new(run_store_opt)),
         global_params: Arc::new(RwLock::new(global_params)),
         global_params_path: global_params_path.clone(),
+        global_constants: Arc::new(RwLock::new(global_constants)),
+        global_constants_path: global_constants_path.clone(),
     };
 
     // Worker que dispara schedules cada minuto (puede correr siempre; chequea
@@ -133,6 +146,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/parameters",
             get(routes::get_global_params).put(routes::put_global_params),
+        )
+        .route(
+            "/api/constants",
+            get(routes::get_global_constants).put(routes::put_global_constants),
         )
         .route("/api/ai/available", get(routes::ai_available))
         .route("/api/ai/build-step", post(routes::ai_build_step))

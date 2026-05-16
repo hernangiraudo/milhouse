@@ -554,8 +554,14 @@ function RunsTable(p: RunsTableProps) {
             Usuario
           </SortableTh>
           <Th>Status</Th>
-          <Th>Pasos</Th>
-          <SortableTh col="duration_ms" sortCol={sortCol} sortDir={sortDir} onSort={onSort}>
+          <Th align="right">Pasos</Th>
+          <SortableTh
+            col="duration_ms"
+            sortCol={sortCol}
+            sortDir={sortDir}
+            onSort={onSort}
+            align="right"
+          >
             Duración
           </SortableTh>
           <SortableTh col="started_at" sortCol={sortCol} sortDir={sortDir} onSort={onSort}>
@@ -622,10 +628,10 @@ function RunsTable(p: RunsTableProps) {
               <td onClick={() => onSelect(jobId)} className="px-3 py-1.5 cursor-pointer">
                 <StatusBadge status={String(r[ci("status")])} />
               </td>
-              <td onClick={() => onSelect(jobId)} className="px-3 py-1.5 cursor-pointer">
+              <td onClick={() => onSelect(jobId)} className="px-3 py-1.5 cursor-pointer text-right tabular-nums">
                 {String(r[ci("total_steps")])}
               </td>
-              <td onClick={() => onSelect(jobId)} className="px-3 py-1.5 cursor-pointer">
+              <td onClick={() => onSelect(jobId)} className="px-3 py-1.5 cursor-pointer text-right tabular-nums">
                 {formatMs(r[ci("duration_ms")])}
               </td>
               <td onClick={() => onSelect(jobId)} className="px-3 py-1.5 cursor-pointer">
@@ -667,18 +673,19 @@ function StepsTable({
     <table className="w-full text-sm">
       <thead className="text-muted">
         <tr>
-          <Th>UID</Th>
+          <Th align="right">UID</Th>
           <Th>Step</Th>
           <Th>Kind</Th>
           <Th>Status</Th>
-          <Th>Filas</Th>
-          <Th>Duración</Th>
+          <Th align="right">Filas</Th>
+          <Th align="right">Duración</Th>
         </tr>
       </thead>
       <tbody>
         {data.rows.map((r, i) => {
           const uid = Number(r[ci("step_uid")]);
           const isSel = uid === selectedStep;
+          const rc = r[ci("row_count")] as number | null;
           return (
             <tr
               key={i}
@@ -687,14 +694,16 @@ function StepsTable({
                 isSel ? "bg-cyan-500/10" : "hover:bg-slate-800/30"
               }`}
             >
-              <Td mono>{uid}</Td>
+              <Td mono align="right">{uid}</Td>
               <Td>{String(r[ci("step_id")])}</Td>
               <Td mono>{String(r[ci("kind")])}</Td>
               <Td>
                 <StatusBadge status={String(r[ci("status")])} />
               </Td>
-              <Td>{(r[ci("row_count")] as number | null) ?? "—"}</Td>
-              <Td>{formatMs(r[ci("duration_ms")])}</Td>
+              <Td align="right">
+                {rc != null ? rc.toLocaleString("es-AR") : "—"}
+              </Td>
+              <Td align="right">{formatMs(r[ci("duration_ms")])}</Td>
             </tr>
           );
         })}
@@ -724,11 +733,11 @@ function DatasetsTable({
     <table className="w-full text-sm">
       <thead className="text-muted">
         <tr>
-          <Th>UID</Th>
+          <Th align="right">UID</Th>
           <Th>Nombre</Th>
           <Th>Nivel</Th>
-          <Th>Filas</Th>
-          <Th>Tamaño</Th>
+          <Th align="right">Filas</Th>
+          <Th align="right">Tamaño</Th>
           <Th>Creada</Th>
         </tr>
       </thead>
@@ -744,13 +753,15 @@ function DatasetsTable({
                 isSel ? "bg-cyan-500/10" : "hover:bg-slate-800/30"
               }`}
             >
-              <Td mono>{uid}</Td>
+              <Td mono align="right">{uid}</Td>
               <Td mono>{String(r[ci("name")])}</Td>
               <Td>
                 <LevelBadge level={String(r[ci("level")] ?? "info")} />
               </Td>
-              <Td>{Number(r[ci("row_count")]).toLocaleString()}</Td>
-              <Td>{formatBytes(r[ci("size_bytes")])}</Td>
+              <Td align="right">
+                {Number(r[ci("row_count")]).toLocaleString("es-AR")}
+              </Td>
+              <Td align="right">{formatBytes(r[ci("size_bytes")])}</Td>
               <Td>{formatDate(r[ci("created_at")])}</Td>
             </tr>
           );
@@ -866,8 +877,22 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function Th({ children }: { children: React.ReactNode }) {
-  return <th className="text-left px-3 py-2 font-medium">{children}</th>;
+function Th({
+  children,
+  align = "left",
+}: {
+  children: React.ReactNode;
+  align?: "left" | "right";
+}) {
+  return (
+    <th
+      className={`px-3 py-2 font-medium ${
+        align === "right" ? "text-right" : "text-left"
+      }`}
+    >
+      {children}
+    </th>
+  );
 }
 function SortableTh({
   children,
@@ -875,20 +900,22 @@ function SortableTh({
   sortCol,
   sortDir,
   onSort,
+  align = "left",
 }: {
   children: React.ReactNode;
   col: SortCol;
   sortCol: SortCol;
   sortDir: SortDir;
   onSort: (c: SortCol) => void;
+  align?: "left" | "right";
 }) {
   const active = sortCol === col;
   return (
     <th
       onClick={() => onSort(col)}
-      className={`text-left px-3 py-2 font-medium cursor-pointer select-none hover:text-app ${
-        active ? "text-app" : ""
-      }`}
+      className={`px-3 py-2 font-medium cursor-pointer select-none hover:text-app ${
+        align === "right" ? "text-right" : "text-left"
+      } ${active ? "text-app" : ""}`}
     >
       {children}
       <span className="ml-1 text-dim">
@@ -900,12 +927,18 @@ function SortableTh({
 function Td({
   children,
   mono,
+  align = "left",
 }: {
   children: React.ReactNode;
   mono?: boolean;
+  align?: "left" | "right";
 }) {
   return (
-    <td className={`px-3 py-1.5 ${mono ? "font-mono text-xs" : ""}`}>
+    <td
+      className={`px-3 py-1.5 ${mono ? "font-mono text-xs" : ""} ${
+        align === "right" ? "text-right tabular-nums" : ""
+      }`}
+    >
       {children}
     </td>
   );
