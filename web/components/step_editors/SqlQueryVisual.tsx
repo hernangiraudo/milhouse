@@ -570,6 +570,7 @@ export function SqlQueryVisual({
             onChange({ ...step, query: v });
           }}
           height="220px"
+          connection={conn || null}
         />
         <p className="text-[11px] text-dim">
           {mode === "manual"

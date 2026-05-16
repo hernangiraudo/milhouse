@@ -481,7 +481,27 @@ pub async fn update_connection(
     Path(current_name): Path<String>,
     Json(req): Json<UpdateConnectionReq>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let new_conn = parse_connection_payload(&req.name, req.description, &req.spec)?;
+    // Si el body NO trae explícitamente el campo `password` (en los kinds
+    // que lo aceptan), conservamos la password de la conexión existente.
+    // Esto soporta la convención del front: "input vacío en modo edit =
+    // mantener la actual".
+    let mut spec_value = req.spec.clone();
+    let body_has_password = matches!(&spec_value, serde_json::Value::Object(m) if m.contains_key("password"));
+    if !body_has_password {
+        let existing = state.connections.read().await.clone();
+        if let Some(prev) = existing.connections.iter().find(|c| c.name == current_name) {
+            let prev_pwd = match &prev.kind {
+                crate::config::ConnectionKind::Postgres { password, .. }
+                | crate::config::ConnectionKind::SqlServer { password, .. }
+                | crate::config::ConnectionKind::Mysql { password, .. } => password.clone(),
+                _ => None,
+            };
+            if let (Some(pwd), serde_json::Value::Object(m)) = (prev_pwd, &mut spec_value) {
+                m.insert("password".into(), serde_json::Value::String(pwd));
+            }
+        }
+    }
+    let new_conn = parse_connection_payload(&req.name, req.description, &spec_value)?;
     let mut file = state.connections.read().await.clone();
     file.update(&current_name, new_conn)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))?;
@@ -611,6 +631,75 @@ pub async fn test_connection_endpoint(
             "ok": false,
             "error": format!("{e:#}")
         }))),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct CheckSqlReq {
+    pub sql: String,
+    #[serde(default)]
+    pub connection: Option<String>,
+}
+
+/// POST /api/sql/check — prepara la sentencia contra la conexión indicada
+/// (sin ejecutarla) y devuelve si pasó el parse + bind. Para motores que no
+/// soportan prepare "barato", devuelve `supported=false` y no falla.
+pub async fn check_sql_endpoint(
+    State(state): State<AppState>,
+    Json(req): Json<CheckSqlReq>,
+) -> Json<Value> {
+    let sql_trimmed = req.sql.trim().to_string();
+    if sql_trimmed.is_empty() {
+        return Json(json!({ "ok": false, "error": "SQL vacío" }));
+    }
+    let opened = match state.pool.get_any(req.connection.as_deref()).await {
+        Ok(o) => o,
+        Err(e) => {
+            return Json(json!({
+                "ok": false,
+                "error": format!("conexión: {e:#}"),
+            }))
+        }
+    };
+    match &*opened {
+        crate::engine::OpenedConnection::Duckdb(conn) => {
+            let conn = conn.clone();
+            // Corremos el prepare en thread blocking con timeout. Si la
+            // conexión está bloqueada por otra operación, cortamos sin colgar
+            // el server.
+            let prepare_future = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let guard = conn.blocking_lock();
+                guard.prepare(&sql_trimmed).map(|_| ()).map_err(|e| format!("{e}"))
+            });
+            let res = tokio::time::timeout(std::time::Duration::from_secs(4), prepare_future).await;
+            match res {
+                Ok(Ok(Ok(()))) => Json(json!({ "ok": true, "supported": true })),
+                Ok(Ok(Err(e))) => {
+                    if e.contains("device or resource busy")
+                        || e.contains("resource busy")
+                    {
+                        Json(json!({
+                            "ok": true,
+                            "supported": false,
+                            "note": "la conexión está ocupada — no se pudo chequear sintaxis ahora",
+                        }))
+                    } else {
+                        Json(json!({ "ok": false, "error": e, "supported": true }))
+                    }
+                }
+                Ok(Err(e)) => Json(json!({ "ok": false, "error": format!("task: {e}") })),
+                Err(_) => Json(json!({
+                    "ok": true,
+                    "supported": false,
+                    "note": "timeout: la conexión no respondió en 4s (probablemente ocupada con otra operación)",
+                })),
+            }
+        }
+        _ => Json(json!({
+            "ok": true,
+            "supported": false,
+            "note": "el chequeo de sintaxis solo está disponible para conexiones DuckDB",
+        })),
     }
 }
 

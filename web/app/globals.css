@@ -97,6 +97,35 @@ body {
   color: var(--accent-ink);
 }
 
+/* Botón secundario: usado en Cancelar / acciones neutras. En oscuro queda
+   tipo "surface elevado"; en claro pasa a slate-200 con borde y texto
+   oscuros para que contraste contra el panel blanco. */
+.milhouse-btn-secondary {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.milhouse-btn-secondary:hover {
+  background: var(--border);
+  border-color: var(--text-dim);
+}
+:root[data-theme="dark"] .milhouse-btn-secondary {
+  background: #1e293b; /* slate-800 */
+  border-color: #475569; /* slate-600 */
+}
+:root[data-theme="dark"] .milhouse-btn-secondary:hover {
+  background: #334155; /* slate-700 */
+}
+:root[data-theme="light"] .milhouse-btn-secondary {
+  background: #e2e8f0; /* slate-200 */
+  color: #0f172a; /* slate-900 */
+  border-color: #94a3b8; /* slate-400 */
+}
+:root[data-theme="light"] .milhouse-btn-secondary:hover {
+  background: #cbd5e1; /* slate-300 */
+}
+
 /* =====================================================================
    Light mode overrides
    Las clases Tailwind oscuras hardcodeadas en componentes (bg-panel,

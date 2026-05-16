@@ -121,7 +121,7 @@ export function CreateCaseDialog({
           <button
             type="button"
             onClick={onClose}
-            className="text-sm px-3 py-2 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800"
+            className="text-sm px-3 py-2 rounded milhouse-btn-secondary"
           >
             Cancelar
           </button>
@@ -249,7 +249,7 @@ export function AttachToCaseDialog({
         <div className="flex gap-2 justify-end">
           <button
             onClick={onClose}
-            className="text-sm px-3 py-2 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800"
+            className="text-sm px-3 py-2 rounded milhouse-btn-secondary"
           >
             Cancelar
           </button>

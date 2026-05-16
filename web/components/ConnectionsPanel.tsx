@@ -368,6 +368,16 @@ function ConnectionDialog({
   const [err, setErr] = useState<string | null>(null);
   const [testRes, setTestRes] = useState<TestConnectionResult | null>(null);
 
+  /** Devuelve el campo password adecuado:
+   *  - En modo create, manda lo que el usuario tipeó (o null si vacío).
+   *  - En modo edit, si el usuario NO tocó el campo (sigue vacío), omitimos
+   *    el campo del JSON para que el backend conserve la password previa.
+   *    Si el usuario tipeó algo nuevo, lo enviamos. */
+  function passwordField(): { password?: string | null } {
+    if (mode === "edit" && pgPass === "") return {};
+    return { password: pgPass || null };
+  }
+
   function buildSpec(): Record<string, unknown> {
     switch (type) {
       case "duckdb":
@@ -382,7 +392,7 @@ function ConnectionDialog({
           host: pgHost,
           port: pgPort,
           user: pgUser,
-          password: pgPass || null,
+          ...passwordField(),
           database: pgDb,
         };
       case "sqlite":
@@ -393,7 +403,7 @@ function ConnectionDialog({
           host: pgHost,
           port: pgPort,
           user: pgUser,
-          password: pgPass || null,
+          ...passwordField(),
           database: pgDb,
           encrypt: mssqlEncrypt,
           trust_server_certificate: mssqlTrust,
@@ -404,7 +414,7 @@ function ConnectionDialog({
           host: pgHost,
           port: pgPort,
           user: pgUser,
-          password: pgPass || null,
+          ...passwordField(),
           database: pgDb,
           ssl: mysqlSsl,
         };
@@ -456,13 +466,13 @@ function ConnectionDialog({
   return (
     <div
       className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
-      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
     >
       <form
         onSubmit={onSubmit}
         className="bg-surface border border-surface-strong rounded-xl p-6 w-full max-w-2xl space-y-3 max-h-[90vh] overflow-auto"
         style={{ boxShadow: "var(--shadow)" }}
-        onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-lg font-bold">
           {mode === "create" ? "Nueva conexión" : `Editar "${existing!.name}"`}
@@ -582,7 +592,11 @@ function ConnectionDialog({
                     value={pgPass}
                     onChange={(e) => setPgPass(e.target.value)}
                     className="w-full milhouse-field"
-                    placeholder="(no se persiste si vacío y mode=edit)"
+                    placeholder={
+                      mode === "edit"
+                        ? "••••••••  (dejá vacío para conservar la actual)"
+                        : "ingresá la password"
+                    }
                   />
                 </Field>
               </div>
@@ -683,7 +697,7 @@ function ConnectionDialog({
           <button
             type="button"
             onClick={onClose}
-            className="text-sm px-3 py-2 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800"
+            className="text-sm px-3 py-2 rounded milhouse-btn-secondary"
           >
             Cancelar
           </button>

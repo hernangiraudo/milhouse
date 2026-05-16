@@ -268,7 +268,7 @@ function DialogRenderer({
           {spec.kind !== "alert" && (
             <button
               onClick={cancel}
-              className="text-sm px-3 py-1.5 rounded border border-surface-strong bg-surface-2 hover:opacity-80"
+              className="text-sm px-3 py-1.5 rounded milhouse-btn-secondary"
             >
               {("cancel" in spec && spec.cancel) || "Cancelar"}
             </button>

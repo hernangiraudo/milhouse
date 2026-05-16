@@ -68,8 +68,8 @@ export function SqlExecVisual({
           <button
             type="button"
             onClick={format}
-            className="text-xs px-3 py-2 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800"
-            title="Indentar y normalizar"
+            className="text-xs px-3 py-2 rounded milhouse-btn-secondary"
+            title="Indentar y normalizar todas las sentencias (separadas por ;)"
           >
             ✨ Formatear
           </button>
@@ -81,6 +81,7 @@ export function SqlExecVisual({
           value={step.query ?? ""}
           onChange={(v) => onChange({ ...step, query: v })}
           height="320px"
+          connection={conn || null}
         />
         <p className="text-[11px] text-dim mt-1">
           Separá varias sentencias con <code>;</code>. Cada una se ejecuta por

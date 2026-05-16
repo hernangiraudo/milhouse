@@ -127,7 +127,7 @@ export function MilhouseAIDialog({
           <button
             type="button"
             onClick={onClose}
-            className="text-sm px-3 py-2 rounded border border-surface-strong bg-surface-2"
+            className="text-sm px-3 py-2 rounded milhouse-btn-secondary"
           >
             Cancelar
           </button>
