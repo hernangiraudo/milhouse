@@ -286,7 +286,7 @@ pub async fn parse_excel_for_param(
 
 /// Devuelve los nombres de parámetros referenciados como `:nombre` en un
 /// texto. Ignora `::` (casts) y referencias dentro de strings/comentarios.
-fn scan_param_refs(text: &str) -> Vec<String> {
+pub fn scan_param_refs(text: &str) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;

@@ -1,7 +1,7 @@
 use axum::routing::{delete, get, post};
 use axum::Router;
 use dashmap::DashMap;
-use milhouse::api::{routes, ws, AppState};
+use milhouse::api::{public as api_public, routes, ws, AppState};
 use milhouse::config::{ConnectionsFile, UsersFile};
 use milhouse::engine::ConnectionPool;
 use milhouse::runs::RunStore;
@@ -98,6 +98,15 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/connections/:name/tables/:table/columns",
             get(routes::list_columns_endpoint),
+        )
+        // API pública de proyectos expuestos
+        .route(
+            "/api/public/projects/:slug/run",
+            post(api_public::run_project),
+        )
+        .route(
+            "/api/public/jobs/:id",
+            get(api_public::get_job_status),
         )
         .route("/api/sql/check", post(routes::check_sql_endpoint))
         .route(

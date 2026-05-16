@@ -26,6 +26,7 @@ import { SamplePanel } from "./SamplePanel";
 import type { LogLine, TableSample } from "@/lib/types";
 import { ParametersPanel } from "./ParametersPanel";
 import { ParameterPromptDialog } from "./ParameterPromptDialog";
+import { ApiExposurePanel } from "./ApiExposurePanel";
 
 export type ParamKind =
   | "date"
@@ -49,6 +50,13 @@ export interface ParamPreset {
   values: Record<string, ParamValueJson>;
 }
 
+export interface ProjectApiConfig {
+  exposed?: boolean;
+  token?: string | null;
+  export_datasets?: string[];
+  accept_parameters?: boolean;
+}
+
 type ProjectShape = {
   name: string;
   version?: number;
@@ -61,6 +69,7 @@ type ProjectShape = {
   steps: Step[];
   parameters?: ParamSpec[];
   presets?: ParamPreset[];
+  api?: ProjectApiConfig;
   duckdb_path?: string | null;
   [k: string]: unknown;
 };
@@ -851,6 +860,14 @@ export function DesignEditor({
             presets: next.presets,
           })
         }
+      />
+
+      {/* Exposición como API REST */}
+      <ApiExposurePanel
+        projectFilename={currentName}
+        api={cfg.api ?? {}}
+        steps={cfg.steps}
+        onChange={(next) => applyChange({ ...cfg, api: next })}
       />
 
       {/* Grupos */}

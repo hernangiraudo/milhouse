@@ -25,7 +25,37 @@ pub struct EtlConfig {
     /// FechaDesde y FechaHasta).
     #[serde(default)]
     pub presets: Vec<ParamPreset>,
+    /// Configuración para exponer el proyecto como API REST pública.
+    #[serde(default)]
+    pub api: ApiConfig,
     pub steps: Vec<Step>,
+}
+
+/// Configuración para exponer el proyecto vía `/api/public/projects/:slug`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApiConfig {
+    /// Si false (default), los endpoints públicos rechazan este proyecto.
+    #[serde(default)]
+    pub exposed: bool,
+    /// Token opcional. Si está presente, los requests deben mandarlo en el
+    /// header `X-API-Token` (o `Authorization: Bearer ...`). Si está
+    /// ausente, el endpoint es público sin auth (asume que el operador
+    /// pone Milhouse detrás de un proxy autenticado).
+    #[serde(default)]
+    pub token: Option<String>,
+    /// step_ids cuyos datasets se devuelven en la respuesta de
+    /// /api/public/jobs/:id cuando el job termina ok. Si vacío, no se
+    /// devuelven datasets (solo status).
+    #[serde(default)]
+    pub export_datasets: Vec<String>,
+    /// Si true (default), el endpoint /run espera parámetros en el body.
+    /// Si false, ignora `parameters` del body.
+    #[serde(default = "default_true")]
+    pub accept_parameters: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Tipo de parámetro. Determina cómo se renderiza en la UI y cómo se

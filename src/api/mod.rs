@@ -1,4 +1,5 @@
 pub mod dto;
+pub mod public;
 pub mod routes;
 pub mod ws;
 
