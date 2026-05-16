@@ -9,7 +9,13 @@
     {
       "name": "FechaHasta",
       "kind": "date",
-      "label": null,
+      "label": "Fecha Hasta",
+      "description": null
+    },
+    {
+      "name": "Comitente",
+      "kind": "number",
+      "label": "Número de Comitente",
       "description": null
     }
   ],
@@ -20,6 +26,13 @@
       "values": {
         "FechaHasta": "2026-05-15",
         "FechaDesde": "2025-12-31"
+      }
+    },
+    {
+      "name": "c17215",
+      "description": null,
+      "values": {
+        "Comitente": "17215"
       }
     }
   ]

@@ -36,6 +36,18 @@
       "database": "AllariaWeb-Prod",
       "encrypt": "on",
       "trust_server_certificate": true
+    },
+    {
+      "name": "AllariaWeb-DSA",
+      "description": "AllariaWeb-DSA",
+      "type": "sql_server",
+      "host": "localhost",
+      "port": 1433,
+      "user": "hgiraudo",
+      "password": "hg741852+",
+      "database": "AllariaWeb-DSA",
+      "encrypt": "on",
+      "trust_server_certificate": true
     }
   ]
 }
