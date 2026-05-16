@@ -24,13 +24,13 @@
       "name": "YTD",
       "description": "Year to Date 2026",
       "values": {
-        "FechaHasta": "2026-05-15",
-        "FechaDesde": "2025-12-31"
+        "FechaDesde": "2025-12-31",
+        "FechaHasta": "2026-05-15"
       }
     },
     {
       "name": "c17215",
-      "description": null,
+      "description": "Comitente 17215",
       "values": {
         "Comitente": "17215"
       }

@@ -410,6 +410,18 @@ pub async fn create_job(
             tracing::info!("assigned missing step_uids and saved {}", path.display());
         }
     }
+    // Si la ejecución es offline con bundle preloadeado, los steps que
+    // vienen precargados no se ejecutan — leen su dataset del bundle. No
+    // necesitan ni conexión ni `:param` resueltos. Excluimos ese set de
+    // las dos validaciones siguientes.
+    let preloaded_set: std::collections::HashSet<String> = if req.use_preload {
+        crate::runs::bundle::preloaded_step_ids(&req.config_name)
+            .into_iter()
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
     // Validación: ningún paso sql_query / sql_exec puede ir sin conexión
     // declarada. (Antes caía al `default` del pool; ahora exigimos explícita
     // para evitar correr accidentalmente contra la base equivocada.)
@@ -424,6 +436,9 @@ pub async fn create_job(
                 if !targets.contains(&s.id) {
                     continue;
                 }
+            }
+            if preloaded_set.contains(&s.id) {
+                continue;
             }
             let conn = match &s.spec {
                 crate::config::StepSpec::SqlQuery { connection, .. }
@@ -486,6 +501,9 @@ pub async fn create_job(
                 if !targets.contains(&s.id) {
                     continue;
                 }
+            }
+            if preloaded_set.contains(&s.id) {
+                continue;
             }
             let texts: Vec<&str> = match &s.spec {
                 crate::config::StepSpec::SqlQuery { query, .. }

@@ -18,6 +18,10 @@ interface SqlQueryStep {
   connection?: string | null;
   query?: string;
   output_table?: string;
+  /** Columnas datetime que deben mantener la hora (match case-insensitive
+   *  contra el nombre en el resultado). Por default vacío → todas las
+   *  columnas datetime se truncan a fecha. */
+  keep_time_columns?: string[];
   [k: string]: unknown;
 }
 
@@ -344,6 +348,61 @@ export function SqlQueryVisual({
         </div>
       )}
 
+      {/* Columnas con hora: en SQL Server, datetime/datetime2/smalldatetime
+          se truncan a fecha por default. Acá el usuario puede marcar las
+          que necesita conservar con HH:MM:SS. */}
+      {columns.length > 0 && columns.some((c) => isDateTimeDtype(c.data_type)) && (
+        <div className="bg-surface-2 border border-surface rounded p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h5 className="text-xs uppercase tracking-wider text-muted">
+              Columnas con hora (
+              {(step.keep_time_columns ?? []).length}/
+              {columns.filter((c) => isDateTimeDtype(c.data_type)).length})
+            </h5>
+            <span className="text-[10px] text-dim">
+              Default: solo fecha. Tildá las que necesitan HH:MM:SS.
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
+            {columns
+              .filter((c) => isDateTimeDtype(c.data_type))
+              .map((c) => {
+                const list = step.keep_time_columns ?? [];
+                const checked = list.some(
+                  (n) => n.toLowerCase() === c.name.toLowerCase(),
+                );
+                return (
+                  <label
+                    key={c.name}
+                    className="flex items-center gap-2 text-sm cursor-pointer text-app"
+                    title={c.data_type}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        const cur = step.keep_time_columns ?? [];
+                        const next = checked
+                          ? cur.filter(
+                              (n) =>
+                                n.toLowerCase() !== c.name.toLowerCase(),
+                            )
+                          : [...cur, c.name];
+                        onChange({ ...step, keep_time_columns: next });
+                      }}
+                    />
+                    <span>🕐</span>
+                    <code className="font-mono text-xs">{c.name}</code>
+                    <span className="text-[10px] text-dim truncate">
+                      {c.data_type}
+                    </span>
+                  </label>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
       {/* WHERE */}
       {columns.length > 0 && (
         <div className="bg-surface-2 border border-surface rounded p-3">
@@ -619,6 +678,18 @@ export function SqlQueryVisual({
         </p>
       </div>
     </div>
+  );
+}
+
+/** ¿El tipo SQL representa fecha+hora? Solo aplica el control a estas;
+ *  las columnas `date` puras (sin hora) ya son fecha y no necesitan
+ *  opción. Match laxo para cubrir las variantes habituales. */
+function isDateTimeDtype(dt: string | undefined | null): boolean {
+  const d = (dt ?? "").toLowerCase();
+  return (
+    d.includes("datetime") ||
+    d.includes("smalldatetime") ||
+    d.includes("timestamp")
   );
 }
 

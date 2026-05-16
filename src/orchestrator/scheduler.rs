@@ -265,27 +265,122 @@ async fn supervisor_and_scheduler(
                         guard.insert(k.clone(), Arc::new(v.clone()));
                     }
                     drop(guard);
-                    // Marcar como Skipped los steps cuyo output_table fue precargado.
+                    // Marcar como Done los steps cuyo output_table fue precargado:
+                    // - emitir StepCompleted con sample → la UI lo ve como
+                    //   un paso normal con datos.
+                    // - persistir el dataset en la DB de runs si debug=true,
+                    //   así el panel "Datos de salida" puede abrirlo.
+                    // - decrementar in-degree de sucesores.
+                    let now_chrono = Utc::now();
                     for s in &cfg.steps {
-                        if let Some(ot) = s.output_table() {
-                            if loaded.contains_key(ot) {
-                                set_step_state(
-                                    &state,
-                                    &s.id,
-                                    StepRuntimeState::Skipped {
-                                        reason: "precargado desde bundle".to_string(),
-                                    },
-                                    &broadcaster,
-                                )
-                                .await;
-                                done_or_terminal.insert(s.id.clone());
-                                let succs =
-                                    dag.successors.get(&s.id).cloned().unwrap_or_default();
-                                for next in succs {
-                                    if let Some(d) = in_degree.get_mut(&next) {
-                                        *d = d.saturating_sub(1);
+                        let Some(ot) = s.output_table() else { continue };
+                        let Some(df_arc) = loaded.get(ot) else { continue };
+                        let row_count = df_arc.height();
+                        let sample = make_sample(df_arc);
+
+                        let done_state = StepRuntimeState::Done {
+                            started_at: now_chrono,
+                            finished_at: now_chrono,
+                            duration_ms: 0,
+                            row_count,
+                        };
+
+                        // Estado Done + sample + log informativo.
+                        {
+                            let mut st = state.write().await;
+                            if let Some(info) = st.steps.get_mut(&s.id) {
+                                info.state = done_state.clone();
+                                info.sample = Some(sample.clone());
+                                info.logs.push(LogLine {
+                                    at: now_chrono,
+                                    level: "info".to_string(),
+                                    line: format!(
+                                        "precargado desde bundle ({} filas) — no se ejecuta",
+                                        row_count
+                                    ),
+                                });
+                            }
+                        }
+                        let _ = broadcaster.send(ProgressEvent::StepStateChanged {
+                            step_id: s.id.clone(),
+                            state: done_state.clone(),
+                        });
+                        let _ = broadcaster.send(ProgressEvent::StepCompleted {
+                            step_id: s.id.clone(),
+                            row_count,
+                            duration_ms: 0,
+                            sample: Some(sample),
+                        });
+
+                        // Persistencia en la DB de runs para que el step
+                        // aparezca en Revisión y el dataset sea abrible
+                        // desde el panel "Datos de salida".
+                        if let Some(store) = run_store.as_ref() {
+                            if let Some(uid) = s.step_uid {
+                                if let Err(e) = store
+                                    .upsert_step_run(
+                                        &job_id_owned,
+                                        uid,
+                                        &s.id,
+                                        s.kind_str(),
+                                        s.group.as_deref(),
+                                        &done_state,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "preload: upsert_step_run failed for {}: {e:#}",
+                                        s.id
+                                    );
+                                }
+                                let log_line = LogLine {
+                                    at: now_chrono,
+                                    level: "info".to_string(),
+                                    line: format!(
+                                        "precargado desde bundle ({} filas) — no se ejecuta",
+                                        row_count
+                                    ),
+                                };
+                                if let Err(e) = store
+                                    .append_logs(&job_id_owned, uid, vec![log_line])
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "preload: append_logs failed for {}: {e:#}",
+                                        s.id
+                                    );
+                                }
+                                if debug {
+                                    let dataset_name = s
+                                        .dataset_name
+                                        .clone()
+                                        .unwrap_or_else(|| s.id.clone());
+                                    let level = s.log_level.as_str();
+                                    if let Err(e) = store
+                                        .persist_dataset(
+                                            &job_id_owned,
+                                            uid,
+                                            &dataset_name,
+                                            level,
+                                            df_arc,
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            "preload: persist_dataset failed for {}: {e:#}",
+                                            s.id
+                                        );
                                     }
                                 }
+                            }
+                        }
+
+                        done_or_terminal.insert(s.id.clone());
+                        let succs =
+                            dag.successors.get(&s.id).cloned().unwrap_or_default();
+                        for next in succs {
+                            if let Some(d) = in_degree.get_mut(&next) {
+                                *d = d.saturating_sub(1);
                             }
                         }
                     }
@@ -790,6 +885,7 @@ fn make_sample(df: &DataFrame) -> TableSample {
 }
 
 fn any_value_to_json(v: Option<AnyValue>) -> JsonValue {
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
     match v {
         None | Some(AnyValue::Null) => JsonValue::Null,
         Some(AnyValue::Boolean(b)) => JsonValue::Bool(b),
@@ -809,6 +905,44 @@ fn any_value_to_json(v: Option<AnyValue>) -> JsonValue {
             .unwrap_or(JsonValue::Null),
         Some(AnyValue::String(s)) => JsonValue::String(s.to_string()),
         Some(AnyValue::StringOwned(s)) => JsonValue::String(s.to_string()),
+        // Fechas/horas: emitimos string ISO. El frontend re-formatea a
+        // dd/mm/yyyy (Date) o dd/mm/yyyy HH:MM:SS (Datetime). Lo
+        // importante acá es NO caer al Debug crudo de polars que
+        // muestra `DateTime { days: ... }`.
+        Some(AnyValue::Date(days)) => {
+            let d = NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                + chrono::Duration::days(days as i64);
+            JsonValue::String(d.format("%Y-%m-%d").to_string())
+        }
+        Some(AnyValue::Datetime(ts, unit, _tz)) => {
+            let dt: Option<NaiveDateTime> = match unit {
+                TimeUnit::Nanoseconds => {
+                    let secs = ts.div_euclid(1_000_000_000);
+                    let nanos = ts.rem_euclid(1_000_000_000) as u32;
+                    chrono::DateTime::from_timestamp(secs, nanos).map(|d| d.naive_utc())
+                }
+                TimeUnit::Microseconds => {
+                    let secs = ts.div_euclid(1_000_000);
+                    let nanos = (ts.rem_euclid(1_000_000) as u32) * 1_000;
+                    chrono::DateTime::from_timestamp(secs, nanos).map(|d| d.naive_utc())
+                }
+                TimeUnit::Milliseconds => {
+                    let secs = ts.div_euclid(1_000);
+                    let nanos = (ts.rem_euclid(1_000) as u32) * 1_000_000;
+                    chrono::DateTime::from_timestamp(secs, nanos).map(|d| d.naive_utc())
+                }
+            };
+            match dt {
+                Some(d) => JsonValue::String(d.format("%Y-%m-%dT%H:%M:%S").to_string()),
+                None => JsonValue::Null,
+            }
+        }
+        Some(AnyValue::Time(nanos)) => {
+            let t = NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+                + chrono::Duration::nanoseconds(nanos);
+            JsonValue::String(t.format("%H:%M:%S").to_string())
+        }
         Some(other) => JsonValue::String(other.to_string()),
     }
 }

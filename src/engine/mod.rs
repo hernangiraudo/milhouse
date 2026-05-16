@@ -27,9 +27,17 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             query,
             connection,
             output_table,
+            keep_time_columns,
         } => {
             let q = params::substitute(query, &ctx.params)?;
-            let df = sql_query::run(ctx, &q, connection.as_deref(), reporter.clone()).await?;
+            let df = sql_query::run(
+                ctx,
+                &q,
+                connection.as_deref(),
+                keep_time_columns,
+                reporter.clone(),
+            )
+            .await?;
             StepOutcome::table(output_table.clone(), df)
         }
         StepSpec::SqlExec { query, connection } => {

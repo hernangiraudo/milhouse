@@ -84,7 +84,7 @@ export function SamplePanel({ sample }: { sample: TableSample | null | undefined
   );
 }
 
-type ColKind = "int" | "float" | "bool" | "string" | "date" | "other";
+type ColKind = "int" | "float" | "bool" | "string" | "date" | "datetime" | "time" | "other";
 
 function columnKind(c: ColumnMeta): ColKind {
   const dt = (c.dtype ?? "").toLowerCase();
@@ -116,9 +116,10 @@ function columnKind(c: ColumnMeta): ColKind {
     return "float";
   }
   if (dt === "bool" || dt === "boolean") return "bool";
-  if (dt.startsWith("date") || dt.startsWith("time") || dt.startsWith("datetime")) {
-    return "date";
-  }
+  // El orden importa: "datetime" empieza con "date", así que primero.
+  if (dt.startsWith("datetime") || dt.includes("timestamp")) return "datetime";
+  if (dt.startsWith("date")) return "date";
+  if (dt.startsWith("time")) return "time";
   if (dt.startsWith("str") || dt === "utf8" || dt === "varchar" || dt === "text") {
     return "string";
   }
@@ -149,11 +150,39 @@ function fmt(v: unknown, kind: ColKind): string {
     if (Number.isFinite(n)) return NF_DEC.format(n);
     return String(v);
   }
+  if (kind === "date") return fmtDate(v);
+  if (kind === "datetime") return fmtDateTime(v);
+  if (kind === "time") return String(v); // ya viene "HH:MM:SS"
   if (typeof v === "number") {
-    // Fallback: si el dtype no es claramente numérico pero llega un number.
     if (Number.isInteger(v)) return NF_INT.format(v);
     return NF_DEC.format(v);
   }
   if (typeof v === "boolean") return v ? "true" : "false";
   return String(v);
+}
+
+/**
+ * Parsea un ISO date (`YYYY-MM-DD`) o ISO datetime y devuelve el componente
+ * fecha como `dd/mm/yyyy`. Si no parsea, devuelve el valor tal cual.
+ */
+function fmtDate(v: unknown): string {
+  const s = String(v);
+  // Patrón: 1990-12-31 (más opcionalmente Thh:mm:ss...).
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (!m) return s;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+/**
+ * Parsea un ISO datetime y devuelve `dd/mm/yyyy HH:MM:SS`. Si la hora es
+ * 00:00:00 (default cuando el origen era una fecha sin hora), oculta la
+ * parte horaria para no contaminar visualmente.
+ */
+function fmtDateTime(v: unknown): string {
+  const s = String(v);
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/.exec(s);
+  if (!m) return fmtDate(v);
+  const datePart = `${m[3]}/${m[2]}/${m[1]}`;
+  const hms = `${m[4]}:${m[5]}:${m[6]}`;
+  return hms === "00:00:00" ? datePart : `${datePart} ${hms}`;
 }

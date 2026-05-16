@@ -9,6 +9,7 @@ pub async fn run(
     ctx: &StepContext,
     query: &str,
     connection: Option<&str>,
+    keep_time_columns: &[String],
     reporter: ProgressReporter,
 ) -> Result<DataFrame> {
     let opened = ctx.connections.get_any(connection).await?;
@@ -22,19 +23,47 @@ pub async fn run(
         connection.unwrap_or("(default)"),
         truncate_for_log(&q, 4000)
     ));
-    match &*opened {
-        OpenedConnection::Duckdb(conn) => duckdb_query(conn.clone(), q, cancel).await,
+    let df = match &*opened {
+        OpenedConnection::Duckdb(conn) => duckdb_query(conn.clone(), q, cancel).await?,
         OpenedConnection::Odbc(conn) => {
             let conn = conn.clone();
             let q2 = q.clone();
             let work = tokio::task::spawn_blocking(move || odbc_query_to_df(conn, &q2));
-            select_with_cancel(work, cancel, "ODBC query").await
+            select_with_cancel(work, cancel, "ODBC query").await?
         }
         OpenedConnection::SqlServer(pool) => {
-            sql_server_query_cancellable(pool.clone(), q, cancel).await
+            sql_server_query_cancellable(pool.clone(), q, cancel).await?
         }
-        OpenedConnection::Mysql(pool) => mysql_query_cancellable(pool.clone(), q, cancel).await,
+        OpenedConnection::Mysql(pool) => mysql_query_cancellable(pool.clone(), q, cancel).await?,
+    };
+    Ok(normalize_temporal_columns(df, keep_time_columns))
+}
+
+/// Por default todas las columnas Datetime se truncan a Date. Las columnas
+/// listadas en `keep_time_columns` se preservan como Datetime con hora.
+/// Match case-insensitive contra el nombre de columna.
+fn normalize_temporal_columns(mut df: DataFrame, keep_time: &[String]) -> DataFrame {
+    let keep: std::collections::HashSet<String> =
+        keep_time.iter().map(|s| s.to_lowercase()).collect();
+    let names: Vec<String> = df
+        .schema()
+        .iter()
+        .map(|(n, _)| n.to_string())
+        .collect();
+    for name in names {
+        let is_datetime = matches!(
+            df.column(&name).map(|c| c.dtype().clone()),
+            Ok(DataType::Datetime(_, _))
+        );
+        if is_datetime && !keep.contains(&name.to_lowercase()) {
+            if let Ok(col) = df.column(&name) {
+                if let Ok(casted) = col.cast(&DataType::Date) {
+                    let _ = df.with_column(casted);
+                }
+            }
+        }
     }
+    df
 }
 
 fn truncate_for_log(s: &str, max: usize) -> String {
@@ -242,6 +271,7 @@ async fn sql_server_query(
 fn tiberius_column_to_series(name: &str, vals: &[tiberius::ColumnData<'static>]) -> Series {
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
     use tiberius::ColumnData;
+    use tiberius::FromSql;
     // Decidir el dtype inspeccionando el primer valor no-Null.
     let sample = vals.iter().find(|v| !matches!(v, ColumnData::U8(None) | ColumnData::I16(None) | ColumnData::I32(None) | ColumnData::I64(None) | ColumnData::F32(None) | ColumnData::F64(None) | ColumnData::Bit(None) | ColumnData::String(None) | ColumnData::Guid(None) | ColumnData::Binary(None)));
     let kind = match sample {
@@ -253,6 +283,12 @@ fn tiberius_column_to_series(name: &str, vals: &[tiberius::ColumnData<'static>])
         Some(ColumnData::F32(_)) => "f64",
         Some(ColumnData::F64(_)) => "f64",
         Some(ColumnData::String(_)) | Some(ColumnData::Guid(_)) => "str",
+        Some(ColumnData::Date(_)) => "date",
+        Some(ColumnData::DateTime(_))
+        | Some(ColumnData::SmallDateTime(_))
+        | Some(ColumnData::DateTime2(_)) => "datetime",
+        Some(ColumnData::DateTimeOffset(_)) => "datetime",
+        Some(ColumnData::Time(_)) => "time",
         _ => "str",
     };
 
@@ -294,6 +330,57 @@ fn tiberius_column_to_series(name: &str, vals: &[tiberius::ColumnData<'static>])
                 .collect();
             Series::new(name.into(), &v)
         }
+        "date" => {
+            // NaiveDate vía FromSql (feature `chrono` activa en Cargo).
+            let v: Vec<Option<i32>> = vals
+                .iter()
+                .map(|c| {
+                    let opt: Option<NaiveDate> = NaiveDate::from_sql(c).ok().flatten();
+                    opt.map(|d| {
+                        d.signed_duration_since(epoch_date()).num_days() as i32
+                    })
+                })
+                .collect();
+            let series = Series::new(name.into(), &v);
+            series
+                .cast(&DataType::Date)
+                .unwrap_or_else(|_| Series::new(name.into(), &v))
+        }
+        "datetime" => {
+            let v: Vec<Option<i64>> = vals
+                .iter()
+                .map(|c| {
+                    // DateTimeOffset → DateTime<Utc>, el resto → NaiveDateTime.
+                    if matches!(c, ColumnData::DateTimeOffset(_)) {
+                        let opt: Option<chrono::DateTime<chrono::Utc>> =
+                            <chrono::DateTime<chrono::Utc> as FromSql>::from_sql(c)
+                                .ok()
+                                .flatten();
+                        opt.map(|dt| dt.naive_utc().and_utc().timestamp_micros())
+                    } else {
+                        let opt: Option<NaiveDateTime> =
+                            NaiveDateTime::from_sql(c).ok().flatten();
+                        opt.map(|dt| dt.and_utc().timestamp_micros())
+                    }
+                })
+                .collect();
+            let series = Series::new(name.into(), &v);
+            series
+                .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+                .unwrap_or_else(|_| Series::new(name.into(), &v))
+        }
+        "time" => {
+            // Polars Time es nanos desde medianoche; lo dejamos como string.
+            let v: Vec<Option<String>> = vals
+                .iter()
+                .map(|c| {
+                    let opt: Option<NaiveTime> =
+                        NaiveTime::from_sql(c).ok().flatten();
+                    opt.map(|t| t.format("%H:%M:%S").to_string())
+                })
+                .collect();
+            Series::new(name.into(), &v)
+        }
         _ => {
             let v: Vec<Option<String>> = vals
                 .iter()
@@ -306,22 +393,17 @@ fn tiberius_column_to_series(name: &str, vals: &[tiberius::ColumnData<'static>])
                     ColumnData::Binary(None) => None,
                     ColumnData::Numeric(Some(n)) => Some(n.to_string()),
                     ColumnData::Numeric(None) => None,
-                    ColumnData::DateTime(_)
-                    | ColumnData::SmallDateTime(_)
-                    | ColumnData::Time(_)
-                    | ColumnData::Date(_)
-                    | ColumnData::DateTime2(_)
-                    | ColumnData::DateTimeOffset(_) => {
-                        let _ = (NaiveDate::default(), NaiveDateTime::default(), NaiveTime::default());
-                        // tiberius con feature `chrono` permite extraer; usamos Debug por simplicidad.
-                        Some(format!("{c:?}"))
-                    }
                     other => Some(format!("{other:?}")),
                 })
                 .collect();
             Series::new(name.into(), &v)
         }
     }
+}
+
+#[inline]
+fn epoch_date() -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()
 }
 
 // shim minimal de hex sin sumar crate (usado solo para BINARY → texto).

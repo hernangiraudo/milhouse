@@ -372,7 +372,11 @@ export type RunMode =
   | { kind: "all" }
   | { kind: "group"; stepIds: string[] }
   | { kind: "group_upto"; stepIds: string[] }
-  | { kind: "group_from"; stepIds: string[] };
+  | { kind: "group_from"; stepIds: string[] }
+  // Ejecuta todos los pasos excepto los preloadeados desde un bundle.
+  // El backend igualmente carga las tablas del bundle al TableStore así
+  // los downstream las consumen sin reejecutar las fuentes.
+  | { kind: "from_imported" };
 
 export interface DesignCanvasProps {
   project: ProjectShape;
@@ -397,6 +401,9 @@ export interface DesignCanvasProps {
   /** Step ids que tienen dataset disponible en el último run (para
    *  pintar el icono de tabla en color y permitir click). */
   tablesAvailable?: Record<string, number>;
+  /** Step ids cuyo dataset proviene de un bundle importado (no se
+   *  ejecutaron localmente). Se pintan con badge "📦 importado". */
+  importedStepIds?: string[];
   /** Click sobre el icono de tabla a la salida de un paso. */
   onOpenTable?: (stepId: string) => void;
 }
@@ -418,8 +425,13 @@ export function DesignCanvas({
   viewMode = "nodes",
   onChangeViewMode,
   tablesAvailable,
+  importedStepIds,
   onOpenTable,
 }: DesignCanvasProps) {
+  const importedSet = useMemo(
+    () => new Set(importedStepIds ?? []),
+    [importedStepIds],
+  );
   const theme = useTheme();
   const dialog = useDialog();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -856,6 +868,14 @@ export function DesignCanvas({
           const selStroke = theme === "light" ? "#0e7490" : "#22d3ee";
           const status: NodeStatus = stepStates?.[n.id] ?? "idle";
           const badge = statusBadge(status, theme);
+          const isImported = importedSet.has(n.id);
+          // Color cyan llamativo para nodos importados desde un bundle:
+          // hacen un override del borde + fill suave + indicador 📦.
+          const importedStroke = theme === "light" ? "#0e7490" : "#22d3ee";
+          const importedFill =
+            theme === "light"
+              ? "#ecfeff"
+              : "rgba(34,211,238,0.10)";
           return (
             <g
               key={n.id}
@@ -868,9 +888,24 @@ export function DesignCanvas({
                 width={n.w}
                 height={n.h}
                 rx={8}
-                fill={isSel ? selFill : fill}
-                stroke={isSel ? selStroke : badge?.borderOverride ?? stroke}
-                strokeWidth={isSel ? 2.8 : status === "running" || status === "failed" ? 2.6 : 1.8}
+                fill={isSel ? selFill : isImported ? importedFill : fill}
+                stroke={
+                  isSel
+                    ? selStroke
+                    : isImported
+                    ? importedStroke
+                    : badge?.borderOverride ?? stroke
+                }
+                strokeWidth={
+                  isSel
+                    ? 2.8
+                    : isImported
+                    ? 2.4
+                    : status === "running" || status === "failed"
+                    ? 2.6
+                    : 1.8
+                }
+                strokeDasharray={isImported && !isSel ? "6 3" : undefined}
               />
               <rect width={4} height={n.h} rx={2} fill={stroke} />
               <text x={14} y={20} fontSize={13} fill={stroke}>
@@ -911,8 +946,42 @@ export function DesignCanvas({
                   )}
                 </text>
               )}
+              {isImported && (
+                <g pointerEvents="none">
+                  <title>
+                    Datos importados de un bundle — este paso no se ejecuta
+                    localmente
+                  </title>
+                  <rect
+                    x={n.w - 70}
+                    y={n.h - 22}
+                    width={62}
+                    height={16}
+                    rx={3}
+                    fill={
+                      theme === "light"
+                        ? "#cffafe"
+                        : "rgba(34,211,238,0.22)"
+                    }
+                    stroke={importedStroke}
+                    strokeWidth={1.2}
+                  />
+                  <text
+                    x={n.w - 39}
+                    y={n.h - 10}
+                    fontSize={9}
+                    fontWeight={700}
+                    textAnchor="middle"
+                    fill={theme === "light" ? "#0c4a6e" : "#cffafe"}
+                    fontFamily="ui-monospace, monospace"
+                  >
+                    📦 IMPORTADO
+                  </text>
+                </g>
+              )}
               {(step.kind === "sql_query" || step.kind === "sql_exec") &&
-                !(step as Step & { connection?: string | null }).connection && (
+                !(step as Step & { connection?: string | null }).connection &&
+                !isImported && (
                   <g pointerEvents="none">
                     <title>
                       Paso SQL sin conexión asignada — no se va a poder ejecutar

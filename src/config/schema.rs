@@ -218,6 +218,12 @@ pub enum StepSpec {
         #[serde(default)]
         connection: Option<String>,
         output_table: String,
+        /// Nombres de columnas que deben **mantener** la hora.
+        /// Por default, todas las columnas datetime se truncan a fecha
+        /// (es lo que sirve en la enorme mayoría de los casos). Si una
+        /// columna necesita HH:MM:SS, listala acá. Match case-insensitive.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep_time_columns: Vec<String>,
     },
     /// Ejecuta SQL DML/DDL contra la base sin traer resultados a Milhouse.
     /// Soporta múltiples sentencias separadas por `;` (ejecutadas en orden).

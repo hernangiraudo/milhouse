@@ -692,18 +692,30 @@ export function DesignEditor({
         for (const d of descendantsInclusive(cfg.steps, sid)) set.add(d);
       }
       target = Array.from(set);
+    } else if (mode.kind === "from_imported") {
+      // Ejecutar todo excepto los pasos cuyo dataset vino del bundle.
+      // El backend igual carga esas tablas al TableStore así los
+      // downstream las consumen sin reejecutar.
+      const imported = new Set(preloadInfo.preloaded_step_ids);
+      target = cfg.steps.filter((s) => !imported.has(s.id)).map((s) => s.id);
     } else {
       target = null; // ejecutar todo
     }
     const isFullRun = target === null;
-    // Pre-check: pasos SQL sin conexión definida.
+    // Pre-check: pasos SQL sin conexión definida. Excluimos los pasos
+    // preloadeados desde un bundle — esos no se ejecutan, su dataset
+    // viene del archivo, así que no necesitan conexión.
     const stepsToRun = isFullRun
       ? cfg.steps.map((s) => s.id)
       : (target as string[]);
     const stepsToRunSet = new Set(stepsToRun);
+    const preloadedSet = new Set(
+      preloadInfo.has_preload ? preloadInfo.preloaded_step_ids : [],
+    );
     const missingConn: string[] = [];
     for (const s of cfg.steps) {
       if (!stepsToRunSet.has(s.id)) continue;
+      if (preloadedSet.has(s.id)) continue;
       if (s.kind !== "sql_query" && s.kind !== "sql_exec") continue;
       const c = (s as { connection?: string | null }).connection;
       if (!c || (typeof c === "string" && c.trim() === "")) {
@@ -732,6 +744,7 @@ export function DesignEditor({
       const declaredSet = new Set(mergedParams.map((p) => p.name));
       for (const s of cfg.steps) {
         if (!stepsToRunSet.has(s.id)) continue;
+        if (preloadedSet.has(s.id)) continue;
         const texts: string[] = [];
         if (s.kind === "sql_query" || s.kind === "sql_exec") {
           const q = (s as { query?: string }).query;
@@ -844,12 +857,42 @@ export function DesignEditor({
     try {
       const r = await importPreload(currentName, file);
       const count = r.manifest.datasets.length;
-      await dialog.alert(
-        `Importado: ${count} dataset(s) precargado(s). Al ejecutar, esos pasos se omiten y sus tablas vienen del bundle.`,
-        { title: "Bundle importado", variant: "info" },
-      );
       const s = await getPreloadStatus(currentName);
       setPreloadInfo(s);
+
+      // Refrescar el estado de ejecución: lanzamos un job parcial que sólo
+      // "ejecuta" los pasos preloadeados. Con use_preload=true, el scheduler
+      // los marca Done con sus datos del bundle, persiste los datasets y
+      // emite eventos. Resultado: los nodos importados aparecen Done en el
+      // lienzo y sus tablas quedan clickeables, sin tocar el resto del DAG.
+      try {
+        const importedIds = s.preloaded_step_ids;
+        setStepStates({});
+        setStepLogs({});
+        setStepSamples({});
+        setActiveSubset(new Set(importedIds));
+        const { job_id } = await createJob(currentName, {
+          user,
+          debug: true,
+          target_steps: importedIds,
+          stop_on_failure: false,
+          use_preload: true,
+          parameters: {},
+          run_name: `Bundle importado · ${new Date().toISOString().slice(0, 10)}`,
+        });
+        setActiveJobId(job_id);
+        setLastJobId(job_id);
+      } catch (refreshErr) {
+        // No es fatal: el bundle quedó importado, sólo no pudimos
+        // disparar el run de refresh.
+        // eslint-disable-next-line no-console
+        console.warn("refresh post-import falló:", refreshErr);
+      }
+
+      await dialog.alert(
+        `Importado: ${count} dataset(s). Los pasos importados aparecen marcados en el lienzo. Apretá "Ejecutar desde Datos Importados" para correr el resto del proyecto usando estas tablas como entrada.`,
+        { title: "Bundle importado", variant: "info" },
+      );
     } catch (e) {
       await dialog.alert(`No se pudo importar el bundle: ${e}`, {
         variant: "danger",
@@ -1017,6 +1060,16 @@ export function DesignEditor({
             >
               {activeJobId ? "Ejecutando…" : "▶ Ejecutar todo"}
             </button>
+            {preloadInfo.has_preload && (
+              <button
+                onClick={() => runJobWithMode({ kind: "from_imported" })}
+                disabled={cfg.steps.length === 0 || activeJobId != null}
+                className="text-xs font-semibold px-3 py-1 rounded disabled:opacity-50 border border-cyan-700 bg-cyan-500/20 text-cyan-100"
+                title="Ejecuta todos los pasos excepto los que vinieron precargados del bundle. Las tablas importadas se cargan al TableStore y los downstream las consumen."
+              >
+                📦 ▶ Ejecutar desde Datos Importados
+              </button>
+            )}
             {activeJobId && (
               <>
                 <button
@@ -1125,6 +1178,9 @@ export function DesignEditor({
           viewMode={canvasView}
           onChangeViewMode={setCanvasView}
           tablesAvailable={lastRunStepUids}
+          importedStepIds={
+            preloadInfo.has_preload ? preloadInfo.preloaded_step_ids : []
+          }
           onOpenTable={onOpenTable}
           onCancelJob={
             activeJobId
