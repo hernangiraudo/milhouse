@@ -1,0 +1,20 @@
+{
+  "name": "Test",
+  "version": 1,
+  "duckdb_path": null,
+  "groups": [],
+  "steps": [
+    {
+      "step_uid": 1,
+      "id": "Cuenta Corriente",
+      "depends_on": [],
+      "group": null,
+      "log_level": "info",
+      "dataset_name": null,
+      "kind": "sql_query",
+      "query": "SELECT * FROM CUENTA_CORRIENTE WHERE ( (1=1) AND (FechaConcertacion > '31-12-2024') AND (FechaConcertacion <= '08-12-2025') AND (ComitenteNumero IN *(17215))",
+      "connection": "VBolsa",
+      "output_table": "sql_query"
+    }
+  ]
+}
