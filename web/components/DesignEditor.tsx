@@ -136,6 +136,18 @@ export function DesignEditor({
   const [stepSessions, setStepSessions] = useState<
     Record<string, { connection: string; sid: number }>
   >({});
+  // Métricas por step para la cola (running clock + done stats). Las
+  // poblamos desde WS events y desde el snapshot poll.
+  const [stepStats, setStepStats] = useState<
+    Record<
+      string,
+      {
+        startedAtMs?: number; // performance.now() al recibir Running
+        durationMs?: number; // viene en step_completed o snapshot Done
+        rowCount?: number;
+      }
+    >
+  >({});
   const [execTab, setExecTab] = useState<"logs" | "sample">("logs");
   // "Propiedades del proyecto": grupos / parámetros / API. Colapsable.
   const [propsOpen, setPropsOpen] = useState(false);
@@ -206,7 +218,9 @@ export function DesignEditor({
           steps: Record<
             string,
             {
-              state: { state: string } | string;
+              state:
+                | { state: string; duration_ms?: number; row_count?: number; started_at?: string }
+                | string;
               logs?: LogLine[];
               sample?: TableSample | null;
               sql_session?: { connection: string; sid: number } | null;
@@ -221,6 +235,10 @@ export function DesignEditor({
           string,
           { connection: string; sid: number } | null
         > = {};
+        const statsMerge: Record<
+          string,
+          { startedAtMs?: number; durationMs?: number; rowCount?: number }
+        > = {};
         for (const [k, v] of Object.entries(j.steps)) {
           // Si hay subset activo, ignorar pasos fuera del subset (sus badges
           // previos deben preservarse).
@@ -231,6 +249,25 @@ export function DesignEditor({
           if (v.logs && v.logs.length > 0) logsMerge[k] = v.logs;
           if (v.sample) samplesMerge[k] = v.sample;
           sessionsMerge[k] = v.sql_session ?? null;
+          if (typeof st === "object" && st) {
+            const out: {
+              startedAtMs?: number;
+              durationMs?: number;
+              rowCount?: number;
+            } = {};
+            if (typeof st.duration_ms === "number") out.durationMs = st.duration_ms;
+            if (typeof st.row_count === "number") out.rowCount = st.row_count;
+            if (typeof st.started_at === "string") {
+              const parsed = Date.parse(st.started_at);
+              if (Number.isFinite(parsed)) {
+                // Convertimos a ref "performance.now()" estimando el offset:
+                // performance.now() es relativo al navload; usamos
+                // Date.now() para alinear.
+                out.startedAtMs = parsed - Date.now() + performance.now();
+              }
+            }
+            if (Object.keys(out).length > 0) statsMerge[k] = out;
+          }
         }
         setStepStates((prev) => ({ ...prev, ...next }));
         setStepSessions((prev) => {
@@ -238,6 +275,13 @@ export function DesignEditor({
           for (const [k, v] of Object.entries(sessionsMerge)) {
             if (v) out[k] = v;
             else delete out[k];
+          }
+          return out;
+        });
+        setStepStats((prev) => {
+          const out = { ...prev };
+          for (const [k, v] of Object.entries(statsMerge)) {
+            out[k] = { ...out[k], ...v };
           }
           return out;
         });
@@ -271,6 +315,13 @@ export function DesignEditor({
             ...p,
             [sid]: stName as NodeStatus,
           }));
+          // Si arrancó: marcar inicio para el clock de running.
+          if (stName === "running") {
+            setStepStats((p) => ({
+              ...p,
+              [sid]: { ...(p[sid] ?? {}), startedAtMs: performance.now() },
+            }));
+          }
           // Si pasó a terminal, limpiamos la sesión SQL asociada — el
           // SPID ya no aplica (lo cancelaron, falló o terminó).
           if (
@@ -308,6 +359,12 @@ export function DesignEditor({
           if (sample) {
             setStepSamples((p) => ({ ...p, [sid]: sample }));
           }
+          const rowCount = m.row_count as number | undefined;
+          const durationMs = m.duration_ms as number | undefined;
+          setStepStats((p) => ({
+            ...p,
+            [sid]: { ...(p[sid] ?? {}), rowCount, durationMs },
+          }));
           // El step terminó: limpiar su sesión SQL si tenía una.
           setStepSessions((p) => {
             if (!(sid in p)) return p;
@@ -891,19 +948,46 @@ export function DesignEditor({
   }
 
   async function onExportBundle() {
-    if (!activeJobId) {
-      // si no hay job activo, ofrecemos exportar el último job conocido vía
-      // la URL del bundle. Como esto requiere job_id, lo desambiguamos
-      // navegando a la sección de Revisión: por simplicidad acá solo
-      // permitimos exportar el job activo o el último que se ejecutó en
-      // esta misma sesión.
+    // Usamos lastJobId, no activeJobId — así el botón sigue siendo útil
+    // después que el job terminó. El backend persistió los datasets en
+    // step_datasets.
+    const jobIdToExport = activeJobId ?? lastJobId;
+    if (!jobIdToExport) {
       await dialog.alert(
         "Ejecutá el proyecto primero (con debug habilitado) y luego podés exportar sus datasets.",
         { title: "Sin ejecución para exportar", variant: "info" },
       );
       return;
     }
-    window.open(exportRunBundleUrl(activeJobId), "_blank");
+    // Aviso si faltan pasos sql_query "raíz" (sin depends_on) que no
+    // tienen dataset persistido. Esos son las fuentes de datos del
+    // proyecto; un bundle sin ellos no le sirve a otra máquina que
+    // quiera correr offline.
+    if (cfg) {
+      const persisted = new Set(Object.keys(lastRunStepUids));
+      const missingRoots = cfg.steps
+        .filter(
+          (s) =>
+            (s.kind === "sql_query" || s.kind === "sql_exec") &&
+            (s.depends_on?.length ?? 0) === 0 &&
+            !persisted.has(s.id),
+        )
+        .map((s) => s.id);
+      if (missingRoots.length > 0) {
+        const ok = await dialog.confirm(
+          `Estos pasos SQL de origen (sin dependencias) no tienen datos en la última ejecución:\n\n  • ${missingRoots.join(
+            "\n  • ",
+          )}\n\nEl bundle se va a exportar igual con lo que haya, pero quien lo importe va a tener que ejecutar esos pasos contra una base. ¿Continuar?`,
+          {
+            title: "Faltan pasos de origen",
+            variant: "warning",
+            ok: "Exportar igual",
+          },
+        );
+        if (!ok) return;
+      }
+    }
+    window.open(exportRunBundleUrl(jobIdToExport), "_blank");
   }
 
   async function onImportBundle(file: File) {
@@ -1124,7 +1208,7 @@ export function DesignEditor({
               <button
                 onClick={() => runJobWithMode({ kind: "from_imported" })}
                 disabled={cfg.steps.length === 0 || activeJobId != null}
-                className="text-xs font-semibold px-3 py-1 rounded disabled:opacity-50 border border-cyan-700 bg-cyan-500/20 text-cyan-100"
+                className="text-xs px-3 py-1 rounded disabled:opacity-50 milhouse-btn-imported"
                 title="Ejecuta todos los pasos excepto los que vinieron precargados del bundle. Las tablas importadas se cargan al TableStore y los downstream las consumen."
               >
                 📦 ▶ Ejecutar desde Datos Importados
@@ -1160,7 +1244,10 @@ export function DesignEditor({
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={onExportBundle}
-              disabled={!activeJobId}
+              disabled={
+                !(activeJobId ?? lastJobId) ||
+                Object.keys(lastRunStepUids).length === 0
+              }
               className="text-xs px-3 py-1 rounded border border-surface-strong bg-surface disabled:opacity-50"
               title="Descarga zip con los datasets persistidos de la última ejecución"
             >
@@ -1259,42 +1346,63 @@ export function DesignEditor({
       </div>
 
       {/* Cola de ejecución en vivo: visible mientras hay job activo. */}
-      {activeJobId && (
-        <RunQueuePanel
-          jobId={activeJobId}
-          steps={cfg.steps}
-          stepStates={stepStates}
-          stepSessions={stepSessions}
-          activeSubset={activeSubset}
-          onCancelAll={async () => {
-            try {
-              await cancelJob(activeJobId);
-            } catch (e) {
-              await dialog.alert(`No se pudo cancelar: ${e}`, {
-                variant: "danger",
-              });
-            }
-          }}
-          onDrain={async () => {
-            try {
-              await drainJob(activeJobId);
-            } catch (e) {
-              await dialog.alert(`No se pudo drenar: ${e}`, {
-                variant: "danger",
-              });
-            }
-          }}
-          onCancelStep={async (sid) => {
-            try {
-              await cancelStep(activeJobId, sid);
-            } catch (e) {
-              await dialog.alert(`No se pudo cancelar el paso: ${e}`, {
-                variant: "danger",
-              });
-            }
-          }}
-        />
-      )}
+      {/* Cola de ejecución: visible mientras hay job activo Y también
+          después de que terminó (para inspeccionar resultados). Se cierra
+          a mano con "Limpiar y cerrar". */}
+      {(() => {
+        const queueJobId = activeJobId ?? lastJobId;
+        const hasAnyState = Object.keys(stepStates).length > 0;
+        if (!queueJobId || !hasAnyState) return null;
+        return (
+          <RunQueuePanel
+            jobId={queueJobId}
+            isActive={activeJobId != null}
+            steps={cfg.steps}
+            stepStates={stepStates}
+            stepSessions={stepSessions}
+            stepStats={stepStats}
+            activeSubset={activeSubset}
+            onCancelAll={async () => {
+              if (!activeJobId) return;
+              try {
+                await cancelJob(activeJobId);
+              } catch (e) {
+                await dialog.alert(`No se pudo cancelar: ${e}`, {
+                  variant: "danger",
+                });
+              }
+            }}
+            onDrain={async () => {
+              if (!activeJobId) return;
+              try {
+                await drainJob(activeJobId);
+              } catch (e) {
+                await dialog.alert(`No se pudo drenar: ${e}`, {
+                  variant: "danger",
+                });
+              }
+            }}
+            onCancelStep={async (sid) => {
+              if (!activeJobId) return;
+              try {
+                await cancelStep(activeJobId, sid);
+              } catch (e) {
+                await dialog.alert(`No se pudo cancelar el paso: ${e}`, {
+                  variant: "danger",
+                });
+              }
+            }}
+            onClearAndClose={() => {
+              setStepStates({});
+              setStepLogs({});
+              setStepSamples({});
+              setStepSessions({});
+              setStepStats({});
+              setActiveSubset(null);
+            }}
+          />
+        );
+      })()}
 
       {/* Panel de ejecución del step seleccionado (logs + sample) */}
       {selectedIdx != null &&

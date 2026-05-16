@@ -131,6 +131,29 @@ body {
   border-color: #475569; /* slate-600 */
 }
 
+/* Botón "Ejecutar desde Datos Importados". Acento cyan que tiene que
+   leerse bien sobre paneles blancos (light) y oscuros (dark). */
+.milhouse-btn-imported {
+  background: #0e7490; /* cyan-700 */
+  color: #ffffff;
+  border: 1px solid #155e75; /* cyan-800 */
+  font-weight: 600;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.milhouse-btn-imported:hover:not(:disabled) {
+  background: #155e75; /* cyan-800 */
+  border-color: #164e63; /* cyan-900 */
+}
+:root[data-theme="dark"] .milhouse-btn-imported {
+  background: rgba(34, 211, 238, 0.18); /* cyan-400 con alpha */
+  color: #cffafe; /* cyan-100 */
+  border-color: #0e7490; /* cyan-700 */
+}
+:root[data-theme="dark"] .milhouse-btn-imported:hover:not(:disabled) {
+  background: rgba(34, 211, 238, 0.32);
+  border-color: #22d3ee; /* cyan-400 */
+}
+
 /* Tabla de datos: header sticky, banding alterno suave, hover de fila.
    Usa tokens del tema para que funcione en light y dark sin overrides. */
 .milhouse-data-table {
