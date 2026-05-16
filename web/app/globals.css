@@ -154,6 +154,28 @@ body {
   border-color: #22d3ee; /* cyan-400 */
 }
 
+/* Alert tipo warning (ámbar). En oscuro mantiene el alpha bajo + texto
+   claro; en claro pasa a fondo sólido amarillo cálido con texto casi
+   negro y borde fuerte — el bg-amber-500/10 + text-amber-300 quedaba
+   ilegible sobre paneles blancos. Links heredan el color, con underline
+   y hover más fuerte. */
+.milhouse-alert-warn {
+  background: rgba(245, 158, 11, 0.10); /* amber-500 con alpha */
+  color: #fcd34d; /* amber-300 */
+  border: 1px solid #b45309; /* amber-700 */
+}
+.milhouse-alert-warn a {
+  color: inherit;
+}
+:root[data-theme="light"] .milhouse-alert-warn {
+  background: #fef3c7; /* amber-100 */
+  color: #451a03; /* amber-950 */
+  border-color: #b45309; /* amber-700 */
+}
+:root[data-theme="light"] .milhouse-alert-warn a:hover {
+  color: #78350f; /* amber-900 */
+}
+
 /* Tabla de datos: header sticky, banding alterno suave, hover de fila.
    Usa tokens del tema para que funcione en light y dark sin overrides. */
 .milhouse-data-table {

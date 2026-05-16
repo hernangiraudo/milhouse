@@ -12,12 +12,26 @@ use tower_http::cors::{Any, CorsLayer};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Carga variables de entorno desde `.env` en el cwd, si existe.
+    // Las vars que ya estén seteadas en el entorno real NO se pisan —
+    // dotenvy::dotenv() solo agrega las que falten. Pensado para que el
+    // operador pueda dejar `ANTHROPIC_API_KEY=...` y otros secretos en
+    // un archivo local que no se commitea (`.env` está en .gitignore;
+    // ver `.env.example` para la lista de vars soportadas).
+    let dotenv_loaded = dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,milhouse=debug".into()),
         )
         .init();
+
+    if let Some(path) = &dotenv_loaded {
+        tracing::info!("loaded env vars from {}", path.display());
+    } else {
+        tracing::debug!("no .env file found in cwd; using process env only");
+    }
 
     let bind = std::env::var("MILHOUSE_BIND").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let configs_dir = std::env::var("MILHOUSE_CONFIGS_DIR").unwrap_or_else(|_| "configs".into());

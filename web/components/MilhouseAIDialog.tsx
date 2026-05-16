@@ -81,10 +81,64 @@ export function MilhouseAIDialog({
         </h3>
 
         {available === false && (
-          <div className="text-amber-300 text-sm bg-amber-500/10 border border-amber-700 rounded p-2">
-            ⚠ <code>ANTHROPIC_API_KEY</code> no está configurada en el server.
-            Setea la variable de entorno y reiniciá el backend para habilitar
-            Milhouse-AI.
+          <div className="milhouse-alert-warn text-sm rounded p-3 space-y-2">
+            <div className="font-semibold flex items-center gap-2">
+              <span>⚠</span>
+              <span>
+                <code className="font-mono">ANTHROPIC_API_KEY</code> no está
+                configurada en el server
+              </span>
+            </div>
+            <p className="text-xs leading-relaxed">
+              Milhouse-AI usa la API de Anthropic (Claude) para generar el
+              paso. Para habilitarlo:
+            </p>
+            <ol className="text-xs leading-relaxed list-decimal ml-5 space-y-1">
+              <li>
+                Conseguí una API key en{" "}
+                <a
+                  href="https://console.anthropic.com/settings/keys"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline font-semibold"
+                >
+                  console.anthropic.com/settings/keys
+                </a>{" "}
+                (creá una cuenta si no tenés, hay free credits para empezar).
+              </li>
+              <li>
+                <strong>Forma recomendada:</strong> copiá{" "}
+                <code className="font-mono">.env.example</code> a{" "}
+                <code className="font-mono">.env</code> en la raiz del repo
+                y descomentá la línea de{" "}
+                <code className="font-mono">ANTHROPIC_API_KEY</code>:
+                <div className="mt-1 milhouse-codeblock text-[11px] px-2 py-1.5 rounded">
+                  <div>ANTHROPIC_API_KEY=sk-ant-...</div>
+                </div>
+                El archivo <code className="font-mono">.env</code> está
+                ignorado por git, así que tu key no se sube al repo.
+              </li>
+              <li>
+                Alternativa: setear la variable de entorno a mano antes de
+                arrancar el backend:
+                <div className="mt-1 milhouse-codeblock text-[11px] px-2 py-1.5 rounded">
+                  <div># PowerShell</div>
+                  <div>
+                    <span className="text-dim">$env:</span>
+                    ANTHROPIC_API_KEY = <span>"sk-ant-..."</span>
+                  </div>
+                  <div className="mt-1"># Mac/Linux/git bash</div>
+                  <div>
+                    export ANTHROPIC_API_KEY=<span>"sk-ant-..."</span>
+                  </div>
+                </div>
+              </li>
+              <li>
+                Reiniciá el backend (<code className="font-mono">cargo run</code>{" "}
+                o <code className="font-mono">scripts/start</code>) para
+                que tome la key nueva.
+              </li>
+            </ol>
           </div>
         )}
 
