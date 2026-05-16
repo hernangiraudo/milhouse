@@ -118,12 +118,17 @@ body {
   background: #334155; /* slate-700 */
 }
 :root[data-theme="light"] .milhouse-btn-secondary {
-  background: #e2e8f0; /* slate-200 */
-  color: #0f172a; /* slate-900 */
-  border-color: #94a3b8; /* slate-400 */
+  /* Tema claro: contra paneles blancos (--panel = #fff) un slate-200
+     casi no se ve. Subimos a slate-300 con borde slate-500 y texto
+     slate-950 para que el botón quede claramente delimitado. */
+  background: #cbd5e1; /* slate-300 */
+  color: #020617; /* slate-950 */
+  border-color: #64748b; /* slate-500 */
+  font-weight: 500;
 }
 :root[data-theme="light"] .milhouse-btn-secondary:hover {
-  background: #cbd5e1; /* slate-300 */
+  background: #94a3b8; /* slate-400 */
+  border-color: #475569; /* slate-600 */
 }
 
 /* Tabla de datos: header sticky, banding alterno suave, hover de fila.

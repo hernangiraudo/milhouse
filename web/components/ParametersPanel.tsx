@@ -22,6 +22,8 @@ function isListKind(k: ParamKind): boolean {
   return k === "list_number" || k === "list_text";
 }
 
+type Tab = "parameters" | "presets";
+
 export function ParametersPanel({
   parameters,
   presets,
@@ -32,6 +34,7 @@ export function ParametersPanel({
   onChange: (next: { parameters: ParamSpec[]; presets: ParamPreset[] }) => void;
 }) {
   const dialog = useDialog();
+  const [tab, setTab] = useState<Tab>("parameters");
   const [expandedPreset, setExpandedPreset] = useState<number | null>(null);
 
   function setParams(next: ParamSpec[]) {
@@ -69,9 +72,11 @@ export function ParametersPanel({
 
   async function deleteParam(i: number) {
     const p = parameters[i];
-    const usedIn = presets.filter((pr) => p.name in pr.values).map((pr) => pr.name);
+    const usedIn = presets
+      .filter((pr) => p.name in pr.values)
+      .map((pr) => pr.name);
     const msg = usedIn.length
-      ? `¿Eliminar el parámetro "${p.name}"? Lo usan estos presets: ${usedIn.join(", ")}. Se quitará de cada uno.`
+      ? `¿Eliminar el parámetro "${p.name}"? Lo usan estas respuestas: ${usedIn.join(", ")}. Se quitará de cada una.`
       : `¿Eliminar el parámetro "${p.name}"?`;
     const ok = await dialog.confirm(msg, {
       title: "Eliminar parámetro",
@@ -108,6 +113,7 @@ export function ParametersPanel({
       { name: name.trim(), description: null, values: {} },
     ]);
     setExpandedPreset(presets.length);
+    setTab("presets");
   }
 
   async function deletePreset(i: number) {
@@ -120,7 +126,11 @@ export function ParametersPanel({
     if (expandedPreset === i) setExpandedPreset(null);
   }
 
-  function updatePresetValue(pIdx: number, paramName: string, value: ParamValueJson | null) {
+  function updatePresetValue(
+    pIdx: number,
+    paramName: string,
+    value: ParamValueJson | null,
+  ) {
     const arr = [...presets];
     const values = { ...arr[pIdx].values };
     if (value == null || (typeof value === "string" && value === "")) {
@@ -132,177 +142,297 @@ export function ParametersPanel({
     setPresets(arr);
   }
 
+  /** Toggle: si el parámetro está en values, lo saca; si no, lo agrega
+   *  con un valor neutral según el kind. */
+  function togglePresetParam(pIdx: number, param: ParamSpec) {
+    const arr = [...presets];
+    const values = { ...arr[pIdx].values };
+    if (param.name in values) {
+      delete values[param.name];
+    } else {
+      values[param.name] = isListKind(param.kind) ? [] : "";
+    }
+    arr[pIdx] = { ...arr[pIdx], values };
+    setPresets(arr);
+  }
+
   return (
-    <div className="bg-panel border border-surface rounded-xl p-3 space-y-3">
-      <div className="flex items-center justify-between">
-        <h4 className="text-xs uppercase tracking-wider text-muted">
-          Parámetros del proyecto · {parameters.length}
-        </h4>
-        <button
-          onClick={addParam}
-          className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2"
-        >
-          + Nuevo parámetro
-        </button>
+    <div className="bg-panel border border-surface rounded-xl">
+      {/* Tabs */}
+      <div className="flex border-b border-surface">
+        <TabBtn
+          active={tab === "parameters"}
+          onClick={() => setTab("parameters")}
+          label={`Parámetros · ${parameters.length}`}
+        />
+        <TabBtn
+          active={tab === "presets"}
+          onClick={() => setTab("presets")}
+          label={`Respuestas guardadas · ${presets.length}`}
+        />
       </div>
 
-      {parameters.length === 0 ? (
-        <div className="text-xs text-dim">
-          Sin parámetros. Agregá uno para usarlo en tus consultas como{" "}
-          <code>:NombreDelParametro</code>.
-        </div>
-      ) : (
-        <div className="space-y-1.5">
-          {parameters.map((p, i) => (
-            <div
-              key={i}
-              className="grid grid-cols-[1fr_140px_2fr_30px] gap-2 items-center bg-surface-2 border border-surface rounded p-2"
+      {/* Tab: Parámetros */}
+      {tab === "parameters" && (
+        <div className="p-3 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <p className="text-xs text-dim">
+              Declará las variables que vas a usar en tus consultas como{" "}
+              <code>:NombreDelParametro</code>.
+            </p>
+            <button
+              onClick={addParam}
+              className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2"
             >
-              <input
-                value={p.name}
-                onChange={(e) => updateParam(i, { name: e.target.value })}
-                placeholder="Nombre (ej. FechaDesde)"
-                className="milhouse-field text-sm font-mono"
-              />
-              <select
-                value={p.kind}
-                onChange={(e) =>
-                  updateParam(i, { kind: e.target.value as ParamKind })
-                }
-                className="milhouse-field text-sm"
-              >
-                {Object.entries(KIND_LABEL).map(([k, label]) => (
-                  <option key={k} value={k}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-              <input
-                value={p.label ?? ""}
-                onChange={(e) =>
-                  updateParam(i, { label: e.target.value || null })
-                }
-                placeholder="Etiqueta visible (opcional)"
-                className="milhouse-field text-sm"
-              />
-              <button
-                onClick={() => deleteParam(i)}
-                className="text-red-400 text-xs"
-                title="Eliminar"
-              >
-                ✕
-              </button>
+              + Nuevo parámetro
+            </button>
+          </div>
+
+          {parameters.length === 0 ? (
+            <div className="text-xs text-dim">Sin parámetros.</div>
+          ) : (
+            <div className="space-y-1.5">
+              {parameters.map((p, i) => (
+                <div
+                  key={i}
+                  className="grid grid-cols-[1fr_140px_2fr_30px] gap-2 items-center bg-surface-2 border border-surface rounded p-2"
+                >
+                  <input
+                    value={p.name}
+                    onChange={(e) => updateParam(i, { name: e.target.value })}
+                    placeholder="Nombre (ej. FechaDesde)"
+                    className="milhouse-field text-sm font-mono"
+                  />
+                  <select
+                    value={p.kind}
+                    onChange={(e) =>
+                      updateParam(i, { kind: e.target.value as ParamKind })
+                    }
+                    className="milhouse-field text-sm"
+                  >
+                    {Object.entries(KIND_LABEL).map(([k, label]) => (
+                      <option key={k} value={k}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    value={p.label ?? ""}
+                    onChange={(e) =>
+                      updateParam(i, { label: e.target.value || null })
+                    }
+                    placeholder="Etiqueta visible (opcional)"
+                    className="milhouse-field text-sm"
+                  />
+                  <button
+                    onClick={() => deleteParam(i)}
+                    className="text-red-400 text-xs"
+                    title="Eliminar"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 
-      <div className="border-t border-surface pt-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <h4 className="text-xs uppercase tracking-wider text-muted">
-            Respuestas guardadas · {presets.length}
-          </h4>
-          <button
-            onClick={addPreset}
-            disabled={parameters.length === 0}
-            className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2 disabled:opacity-50"
-            title={
-              parameters.length === 0
-                ? "Primero declará al menos un parámetro"
-                : ""
-            }
-          >
-            + Nueva respuesta
-          </button>
-        </div>
-        {presets.length === 0 ? (
-          <div className="text-xs text-dim">
-            Las respuestas guardadas combinan valores de uno o varios
-            parámetros (ej. "Year to Date" setea FechaDesde y FechaHasta).
-          </div>
-        ) : (
-          presets.map((pr, i) => (
-            <div
-              key={i}
-              className="bg-surface-2 border border-surface rounded p-2"
+      {/* Tab: Respuestas */}
+      {tab === "presets" && (
+        <div className="p-3 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <p className="text-xs text-dim">
+              Cada respuesta guarda valores para uno o varios parámetros. Una
+              respuesta puede contestar <strong>algunos</strong> de los
+              parámetros (no todos). Al ejecutar, podés combinar varias.
+            </p>
+            <button
+              onClick={addPreset}
+              disabled={parameters.length === 0}
+              className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2 disabled:opacity-50"
+              title={
+                parameters.length === 0
+                  ? "Primero declará al menos un parámetro"
+                  : ""
+              }
             >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex-1 flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      setExpandedPreset(expandedPreset === i ? null : i)
-                    }
-                    className="text-dim"
-                  >
-                    {expandedPreset === i ? "▾" : "▸"}
-                  </button>
-                  <input
-                    value={pr.name}
-                    onChange={(e) => {
-                      const arr = [...presets];
-                      arr[i] = { ...arr[i], name: e.target.value };
-                      setPresets(arr);
-                    }}
-                    className="milhouse-field text-sm font-semibold"
-                  />
-                  <span className="text-[11px] text-dim">
-                    {Object.keys(pr.values).length} valor(es)
-                  </span>
-                </div>
-                <button
-                  onClick={() => deletePreset(i)}
-                  className="text-red-400 text-xs"
-                >
-                  ✕
-                </button>
-              </div>
-              {expandedPreset === i && (
-                <div className="mt-2 space-y-1.5 pl-5">
-                  <input
-                    value={pr.description ?? ""}
-                    onChange={(e) => {
-                      const arr = [...presets];
-                      arr[i] = { ...arr[i], description: e.target.value || null };
-                      setPresets(arr);
-                    }}
-                    placeholder="Descripción (opcional)"
-                    className="milhouse-field text-xs w-full"
-                  />
-                  {parameters.length === 0 && (
-                    <div className="text-xs text-dim">
-                      Declará parámetros primero.
-                    </div>
-                  )}
-                  {parameters.map((p) => (
-                    <PresetParamRow
-                      key={p.name}
-                      param={p}
-                      value={pr.values[p.name]}
-                      onChange={(v) => updatePresetValue(i, p.name, v)}
-                      onLoadExcel={async (f) => {
-                        try {
-                          const r = await parseExcelForParam(f);
-                          updatePresetValue(i, p.name, r.values);
-                          await dialog.alert(
-                            `Cargué ${r.rows_total} valor(es) de "${r.sheet}".`,
-                            { title: "Excel cargado", variant: "info" },
-                          );
-                        } catch (e) {
-                          await dialog.alert(String(e), {
-                            title: "No se pudo leer el Excel",
-                            variant: "danger",
-                          });
-                        }
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
+              + Nueva respuesta
+            </button>
+          </div>
+
+          {parameters.length === 0 && (
+            <div className="text-xs text-dim">
+              Declará parámetros primero en la pestaña "Parámetros".
             </div>
-          ))
-        )}
-      </div>
+          )}
+
+          {parameters.length > 0 && presets.length === 0 && (
+            <div className="text-xs text-dim">
+              Sin respuestas todavía. Ejemplos: "Year to Date" setea
+              FechaDesde y FechaHasta, "Lista clientes A" setea solo
+              Comitente.
+            </div>
+          )}
+
+          {presets.map((pr, i) => {
+            const answeredCount = parameters.filter(
+              (p) => p.name in pr.values,
+            ).length;
+            return (
+              <div
+                key={i}
+                className="bg-surface-2 border border-surface rounded p-2"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex-1 flex items-center gap-2">
+                    <button
+                      onClick={() =>
+                        setExpandedPreset(expandedPreset === i ? null : i)
+                      }
+                      className="text-dim"
+                    >
+                      {expandedPreset === i ? "▾" : "▸"}
+                    </button>
+                    <input
+                      value={pr.name}
+                      onChange={(e) => {
+                        const arr = [...presets];
+                        arr[i] = { ...arr[i], name: e.target.value };
+                        setPresets(arr);
+                      }}
+                      className="milhouse-field text-sm font-semibold flex-1"
+                    />
+                    <span
+                      className="text-[11px] text-dim whitespace-nowrap"
+                      title="Cuántos parámetros del proyecto responde esta respuesta"
+                    >
+                      {answeredCount} / {parameters.length} parámetro
+                      {parameters.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => deletePreset(i)}
+                    className="text-red-400 text-xs"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {expandedPreset === i && (
+                  <div className="mt-2 space-y-2 pl-5">
+                    <input
+                      value={pr.description ?? ""}
+                      onChange={(e) => {
+                        const arr = [...presets];
+                        arr[i] = {
+                          ...arr[i],
+                          description: e.target.value || null,
+                        };
+                        setPresets(arr);
+                      }}
+                      placeholder="Descripción (opcional)"
+                      className="milhouse-field text-xs w-full"
+                    />
+                    <p className="text-[11px] text-dim">
+                      Tildá los parámetros que esta respuesta responde. Los
+                      que queden sin tildar quedan vacíos en la respuesta —
+                      los va a tener que completar otra respuesta o el
+                      usuario al ejecutar.
+                    </p>
+                    {parameters.map((p) => {
+                      const included = p.name in pr.values;
+                      return (
+                        <div
+                          key={p.name}
+                          className={`border rounded p-2 ${
+                            included
+                              ? "border-cyan-700 bg-cyan-500/5"
+                              : "border-surface bg-surface"
+                          }`}
+                        >
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={included}
+                              onChange={() => togglePresetParam(i, p)}
+                            />
+                            <code className="text-xs font-mono">
+                              {p.name}
+                            </code>
+                            {p.label && (
+                              <span className="text-[10px] text-dim">
+                                {p.label}
+                              </span>
+                            )}
+                            <span className="ml-auto text-[10px] text-dim">
+                              {KIND_LABEL[p.kind]}
+                            </span>
+                          </label>
+                          {included && (
+                            <div className="mt-2">
+                              <PresetParamRow
+                                param={p}
+                                value={pr.values[p.name]}
+                                onChange={(v) =>
+                                  updatePresetValue(i, p.name, v)
+                                }
+                                onLoadExcel={async (f) => {
+                                  try {
+                                    const r = await parseExcelForParam(f);
+                                    updatePresetValue(i, p.name, r.values);
+                                    await dialog.alert(
+                                      `Cargué ${r.rows_total} valor(es) de "${r.sheet}".`,
+                                      {
+                                        title: "Excel cargado",
+                                        variant: "info",
+                                      },
+                                    );
+                                  } catch (e) {
+                                    await dialog.alert(String(e), {
+                                      title: "No se pudo leer el Excel",
+                                      variant: "danger",
+                                    });
+                                  }
+                                }}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
+  );
+}
+
+function TabBtn({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        "px-4 py-2 text-sm border-b-2 transition-colors " +
+        (active
+          ? "font-semibold"
+          : "border-transparent text-muted hover:text-app")
+      }
+      style={active ? { borderBottomColor: "var(--accent)" } : undefined}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -320,8 +450,7 @@ function PresetParamRow({
   const k = param.kind;
   const list = isListKind(k);
   return (
-    <div className="grid grid-cols-[150px_1fr_140px] gap-2 items-start">
-      <code className="text-xs font-mono text-muted pt-1.5">{param.name}</code>
+    <div className="grid grid-cols-[1fr_140px] gap-2 items-start">
       <div>
         {k === "date" && (
           <input
@@ -355,7 +484,7 @@ function PresetParamRow({
                   .split(/[\n,;]+/)
                   .map((s) => s.trim())
                   .filter(Boolean);
-                onChange(arr.length === 0 ? null : arr);
+                onChange(arr.length === 0 ? [] : arr);
               }}
               rows={3}
               placeholder="Un valor por línea (o separados por coma)"
@@ -382,15 +511,6 @@ function PresetParamRow({
               }}
             />
           </label>
-        )}
-        {value !== undefined && (
-          <button
-            onClick={() => onChange(null)}
-            className="text-[10px] text-dim hover:text-red-400"
-            title="Quitar valor"
-          >
-            limpiar
-          </button>
         )}
       </div>
     </div>

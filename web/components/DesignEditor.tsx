@@ -403,9 +403,20 @@ export function DesignEditor({
       id = `${baseId}_${n}`;
     }
     const depends_on = nearId ? [nearId] : [];
+    // Para pasos SQL prefijamos la conexión con la última usada (si quedó
+    // recordada en localStorage). Si no hay ninguna, el usuario la elige a
+    // mano — la primera vez es lo único que pasa.
+    const lastConn = readLastUsedConnection();
     const defaults: Record<string, Partial<Step>> = {
-      sql_query: { query: "SELECT 1 AS dummy", output_table: id },
-      sql_exec: { query: "CREATE TABLE IF NOT EXISTS tmp(x INT);" },
+      sql_query: {
+        query: "SELECT 1 AS dummy",
+        output_table: id,
+        ...(lastConn ? { connection: lastConn } : {}),
+      },
+      sql_exec: {
+        query: "CREATE TABLE IF NOT EXISTS tmp(x INT);",
+        ...(lastConn ? { connection: lastConn } : {}),
+      },
       join: {
         left: "",
         right: "",
@@ -475,6 +486,17 @@ export function DesignEditor({
 
   function updateStep(idx: number, next: Step) {
     if (!cfg) return;
+    // Si el step es SQL y trae una conexión, la recordamos como "última
+    // usada" para que el próximo step SQL nuevo arranque con la misma.
+    if (
+      (next.kind === "sql_query" || next.kind === "sql_exec") &&
+      typeof (next as { connection?: unknown }).connection === "string" &&
+      (next as { connection?: string }).connection
+    ) {
+      writeLastUsedConnection(
+        (next as { connection?: string }).connection as string,
+      );
+    }
     const arr = [...cfg.steps];
     const oldId = arr[idx].id;
     arr[idx] = next;
@@ -1578,6 +1600,26 @@ function descendantsInclusive(steps: Step[], target: string): Set<string> {
     }
   }
   return out;
+}
+
+const LAST_USED_CONN_KEY = "milhouse.lastUsedConnection";
+
+function readLastUsedConnection(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(LAST_USED_CONN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeLastUsedConnection(name: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_USED_CONN_KEY, name);
+  } catch {
+    // localStorage puede estar deshabilitado (modo privado, etc).
+  }
 }
 
 function createsCycle(steps: Step[], from: string, to: string): boolean {

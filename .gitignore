@@ -5,9 +5,13 @@
 !/data/exports/.gitkeep
 /data/timings.json
 /data/run/
+/data/preloaded/*
+!/data/preloaded/.gitkeep
 /web/node_modules
 /web/.next
 /web/out
+/web/tsconfig.tsbuildinfo
 .env
 .env.local
 *.log
+/.claude/settings.local.json

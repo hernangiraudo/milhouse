@@ -31,6 +31,9 @@ export function SqlMonitorPanel() {
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [filter, setFilter] = useState<"all" | "milhouse" | "others">("all");
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("elapsed_minutes");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [sqlPreview, setSqlPreview] = useState<ProcessRow | null>(null);
 
   useEffect(() => {
@@ -107,10 +110,48 @@ export function SqlMonitorPanel() {
 
   const filtered = useMemo(() => {
     if (!rows) return null;
-    if (filter === "all") return rows;
-    if (filter === "milhouse") return rows.filter((r) => r.is_milhouse);
-    return rows.filter((r) => !r.is_milhouse);
-  }, [rows, filter]);
+    let out = rows;
+    if (filter === "milhouse") out = out.filter((r) => r.is_milhouse);
+    else if (filter === "others") out = out.filter((r) => !r.is_milhouse);
+    const q = search.trim().toLowerCase();
+    if (q) {
+      out = out.filter((r) => {
+        const hay =
+          (r.login_name ?? "") +
+          " " +
+          (r.host_name ?? "") +
+          " " +
+          (r.program_name ?? "") +
+          " " +
+          (r.database_name ?? "") +
+          " " +
+          (r.status ?? "") +
+          " " +
+          (r.command ?? "") +
+          " " +
+          (r.sql_text ?? "") +
+          " " +
+          String(r.session_id ?? "");
+        return hay.toLowerCase().includes(q);
+      });
+    }
+    return [...out].sort((a, b) => compareRows(a, b, sortKey, sortDir));
+  }, [rows, filter, search, sortKey, sortDir]);
+
+  function toggleSort(k: SortKey) {
+    if (sortKey === k) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(k);
+      // Defaults razonables: tiempo/CPU desc (lo más pesado arriba),
+      // texto asc (alfabético).
+      setSortDir(
+        k === "cpu_time" || k === "elapsed_minutes" || k === "session_id"
+          ? "desc"
+          : "asc",
+      );
+    }
+  }
 
   return (
     <section className="space-y-4">
@@ -160,7 +201,7 @@ export function SqlMonitorPanel() {
         <div className="text-red-400 text-sm whitespace-pre-wrap">{err}</div>
       )}
 
-      <div className="flex gap-1 text-xs flex-wrap">
+      <div className="flex items-center gap-2 text-xs flex-wrap">
         {(
           [
             ["all", "Todas"],
@@ -185,6 +226,31 @@ export function SqlMonitorPanel() {
               : rows.filter((r) => !r.is_milhouse).length}
           </button>
         ))}
+        <div className="flex-1" />
+        <div className="relative">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="buscar en usuario / programa / SQL…"
+            className="milhouse-field text-xs py-1 pr-6 w-64"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-dim hover:text-app text-xs"
+              title="Limpiar"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+        {filtered && rows && filtered.length !== rows.length && (
+          <span className="text-dim">
+            {filtered.length}/{rows.length}
+          </span>
+        )}
       </div>
 
       {filtered != null && filtered.length === 0 && (
@@ -198,15 +264,15 @@ export function SqlMonitorPanel() {
           <table className="w-full text-sm">
             <thead className="bg-surface-2 text-muted text-xs uppercase tracking-wider">
               <tr>
-                <th className="text-left px-3 py-2">SID</th>
-                <th className="text-left px-3 py-2">Bloqueado por</th>
-                <th className="text-left px-3 py-2">Usuario</th>
-                <th className="text-left px-3 py-2">Programa</th>
-                <th className="text-left px-3 py-2">DB</th>
-                <th className="text-left px-3 py-2">Status</th>
-                <th className="text-left px-3 py-2">Cmd</th>
-                <th className="text-right px-3 py-2">CPU</th>
-                <th className="text-right px-3 py-2">min</th>
+                <SortHeader label="SID" k="session_id" current={sortKey} dir={sortDir} onClick={() => toggleSort("session_id")} />
+                <SortHeader label="Bloqueado por" k="blocking_session_id" current={sortKey} dir={sortDir} onClick={() => toggleSort("blocking_session_id")} />
+                <SortHeader label="Usuario" k="login_name" current={sortKey} dir={sortDir} onClick={() => toggleSort("login_name")} />
+                <SortHeader label="Programa" k="program_name" current={sortKey} dir={sortDir} onClick={() => toggleSort("program_name")} />
+                <SortHeader label="DB" k="database_name" current={sortKey} dir={sortDir} onClick={() => toggleSort("database_name")} />
+                <SortHeader label="Status" k="status" current={sortKey} dir={sortDir} onClick={() => toggleSort("status")} />
+                <SortHeader label="Cmd" k="command" current={sortKey} dir={sortDir} onClick={() => toggleSort("command")} />
+                <SortHeader label="CPU" k="cpu_time" current={sortKey} dir={sortDir} align="right" onClick={() => toggleSort("cpu_time")} />
+                <SortHeader label="min" k="elapsed_minutes" current={sortKey} dir={sortDir} align="right" onClick={() => toggleSort("elapsed_minutes")} />
                 <th className="text-left px-3 py-2">SQL</th>
                 <th />
               </tr>
@@ -343,4 +409,77 @@ export function SqlMonitorPanel() {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+type SortKey =
+  | "session_id"
+  | "blocking_session_id"
+  | "login_name"
+  | "program_name"
+  | "database_name"
+  | "status"
+  | "command"
+  | "cpu_time"
+  | "elapsed_minutes";
+
+function compareRows(
+  a: ProcessRow,
+  b: ProcessRow,
+  key: SortKey,
+  dir: "asc" | "desc",
+): number {
+  const mult = dir === "asc" ? 1 : -1;
+  const av = a[key];
+  const bv = b[key];
+  // Nulls al final independiente de la dirección.
+  if (av == null && bv == null) return 0;
+  if (av == null) return 1;
+  if (bv == null) return -1;
+  if (key === "elapsed_minutes") {
+    // viene como string; intentamos parsear.
+    const an = parseFloat(String(av));
+    const bn = parseFloat(String(bv));
+    if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * mult;
+  }
+  if (typeof av === "number" && typeof bv === "number") {
+    return (av - bv) * mult;
+  }
+  return String(av).localeCompare(String(bv)) * mult;
+}
+
+function SortHeader({
+  label,
+  k,
+  current,
+  dir,
+  align,
+  onClick,
+}: {
+  label: string;
+  k: SortKey;
+  current: SortKey;
+  dir: "asc" | "desc";
+  align?: "left" | "right";
+  onClick: () => void;
+}) {
+  const active = current === k;
+  return (
+    <th
+      className={`px-3 py-2 cursor-pointer select-none ${
+        align === "right" ? "text-right" : "text-left"
+      } ${active ? "text-app" : ""}`}
+      onClick={onClick}
+      title={`Ordenar por ${label}`}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        <span
+          className={`text-[9px] ${active ? "" : "text-dim opacity-50"}`}
+          aria-hidden
+        >
+          {active ? (dir === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </span>
+    </th>
+  );
 }
