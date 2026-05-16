@@ -27,6 +27,18 @@
       "query": "SELECT * \nFROM CUPON \nWHERE ( (Fecha > '31-12-2024' AND Fecha <= '08-12-2025') AND (ComitenteNumero IN (17215)))",
       "connection": "AllariaWeb-Prod",
       "output_table": "sql_query"
+    },
+    {
+      "step_uid": 2,
+      "id": "sql_query",
+      "depends_on": [],
+      "group": null,
+      "log_level": "info",
+      "dataset_name": null,
+      "kind": "sql_query",
+      "query": "SELECT 1 AS dummy",
+      "connection": "AllariaWeb-Prod",
+      "output_table": "sql_query"
     }
   ]
 }

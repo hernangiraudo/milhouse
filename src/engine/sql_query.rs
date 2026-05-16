@@ -1,27 +1,90 @@
 use super::context::{OpenedConnection, StepContext};
+use crate::orchestrator::progress::ProgressReporter;
 use anyhow::{anyhow, Context, Result};
 use polars::prelude::*;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
-pub async fn run(ctx: &StepContext, query: &str, connection: Option<&str>) -> Result<DataFrame> {
+pub async fn run(
+    ctx: &StepContext,
+    query: &str,
+    connection: Option<&str>,
+    reporter: ProgressReporter,
+) -> Result<DataFrame> {
     let opened = ctx.connections.get_any(connection).await?;
     let q = query.to_string();
+    let cancel = ctx.cancel.clone();
+    // Log "enviado": timestamp + conexión + texto del SQL. El timestamp lo
+    // adjunta el supervisor cuando recibe el StepLog (la pestaña Logs lo
+    // muestra como `HH:MM:SS [info]`).
+    reporter.log(format!(
+        "→ enviando SQL a `{}`\n{}",
+        connection.unwrap_or("(default)"),
+        truncate_for_log(&q, 4000)
+    ));
     match &*opened {
-        OpenedConnection::Duckdb(conn) => duckdb_query(conn.clone(), q).await,
+        OpenedConnection::Duckdb(conn) => duckdb_query(conn.clone(), q, cancel).await,
         OpenedConnection::Odbc(conn) => {
             let conn = conn.clone();
-            tokio::task::spawn_blocking(move || odbc_query_to_df(conn, &q)).await?
+            let q2 = q.clone();
+            let work = tokio::task::spawn_blocking(move || odbc_query_to_df(conn, &q2));
+            select_with_cancel(work, cancel, "ODBC query").await
         }
-        OpenedConnection::SqlServer(conn) => sql_server_query(conn.clone(), q).await,
-        OpenedConnection::Mysql(pool) => mysql_query(pool.clone(), q).await,
+        OpenedConnection::SqlServer(pool) => {
+            sql_server_query_cancellable(pool.clone(), q, cancel).await
+        }
+        OpenedConnection::Mysql(pool) => mysql_query_cancellable(pool.clone(), q, cancel).await,
+    }
+}
+
+fn truncate_for_log(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}\n…(truncado a {max} caracteres)")
+    }
+}
+
+/// Helper: corre un JoinHandle con cancelación. Si el cancel se activa antes
+/// que el handle termine, abortamos el spawn_blocking y devolvemos error.
+/// El work del lado del servidor podría seguir corriendo (no lo podemos
+/// interrumpir desde acá), pero al menos liberamos al scheduler para
+/// reportar Cancelled.
+async fn select_with_cancel<T>(
+    mut work: tokio::task::JoinHandle<Result<T>>,
+    cancel: CancellationToken,
+    label: &str,
+) -> Result<T> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            work.abort();
+            let _ = (&mut work).await; // drenamos
+            Err(anyhow!("{label} cancelado por el usuario"))
+        }
+        res = &mut work => res.map_err(|e| anyhow!("{label} join: {e}"))?,
     }
 }
 
 async fn duckdb_query(
     conn: Arc<tokio::sync::Mutex<duckdb::Connection>>,
     q: String,
+    cancel: CancellationToken,
 ) -> Result<DataFrame> {
-    tokio::task::spawn_blocking(move || -> Result<DataFrame> {
+    // Tomamos el InterruptHandle ANTES de bloquear, así el watcher puede
+    // llamarlo sin necesidad de tomar el lock (el handle es thread-safe).
+    let interrupt_handle = {
+        let guard = conn.lock().await;
+        guard.interrupt_handle()
+    };
+    let watcher_cancel = cancel.clone();
+    let watcher = tokio::spawn(async move {
+        watcher_cancel.cancelled().await;
+        interrupt_handle.interrupt();
+    });
+
+    let work = tokio::task::spawn_blocking(move || -> Result<DataFrame> {
         let guard = conn.blocking_lock();
         let mut stmt = guard.prepare(&q).context("preparing duckdb query")?;
         let chunks: Vec<DataFrame> = stmt.query_polars([])?.collect();
@@ -35,8 +98,10 @@ async fn duckdb_query(
         }
         acc.rechunk_mut();
         Ok(acc)
-    })
-    .await?
+    });
+    let res = select_with_cancel(work, cancel, "DuckDB query").await;
+    watcher.abort();
+    res
 }
 
 // =====================================================================
@@ -104,15 +169,25 @@ fn odbc_query_to_df(
 // =====================================================================
 // SQL Server (tiberius) — mapeo tipado
 // =====================================================================
+async fn sql_server_query_cancellable(
+    pool: Arc<super::context::SqlServerPool>,
+    sql: String,
+    cancel: CancellationToken,
+) -> Result<DataFrame> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(anyhow!("SQL Server query cancelado por el usuario (la consulta sigue en el servidor)")),
+        res = sql_server_query(pool, sql) => res,
+    }
+}
+
 async fn sql_server_query(
-    client: Arc<tokio::sync::Mutex<super::context::SqlServerClient>>,
+    pool: Arc<super::context::SqlServerPool>,
     sql: String,
 ) -> Result<DataFrame> {
     use futures::TryStreamExt;
     use tiberius::ColumnData;
 
-    // Anexa el SQL al mensaje de error para que el usuario pueda ver qué
-    // consulta exacta falló (clave cuando viene de controles visuales).
     let with_sql_ctx = |e: String| -> String {
         let preview: String = sql.chars().take(800).collect();
         let dots = if sql.len() > 800 { " …(truncado)" } else { "" };
@@ -122,8 +197,9 @@ async fn sql_server_query(
     let mut col_names: Vec<String> = Vec::new();
     let mut cols: Vec<Vec<ColumnData<'static>>> = Vec::new();
     {
-        let mut guard = client.lock().await;
-        let mut stream = guard
+        let mut lease = pool.acquire().await?;
+        let client = lease.client_mut();
+        let mut stream = client
             .simple_query(sql.clone())
             .await
             .map_err(|e| anyhow!("{}", with_sql_ctx(format!("SQL Server query: {e}"))))?;
@@ -264,6 +340,18 @@ mod hex {
 // =====================================================================
 // MySQL (mysql_async) — mapeo tipado
 // =====================================================================
+async fn mysql_query_cancellable(
+    pool: Arc<mysql_async::Pool>,
+    sql: String,
+    cancel: CancellationToken,
+) -> Result<DataFrame> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(anyhow!("MySQL query cancelado por el usuario (la consulta sigue en el servidor)")),
+        res = mysql_query(pool, sql) => res,
+    }
+}
+
 async fn mysql_query(pool: Arc<mysql_async::Pool>, sql: String) -> Result<DataFrame> {
     use mysql_async::prelude::Queryable;
     let mut conn = pool

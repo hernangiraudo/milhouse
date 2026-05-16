@@ -36,8 +36,10 @@ pub enum OpenedConnection {
     /// La conexión ODBC ata su lifetime al Environment global (static), por
     /// eso `'static`. La envuelvo en `Mutex` para serializar accesos.
     Odbc(Arc<Mutex<OdbcConn<'static>>>),
-    /// SQL Server nativo (tiberius). Cliente serializado por Mutex.
-    SqlServer(Arc<Mutex<SqlServerClient>>),
+    /// SQL Server nativo (tiberius). Es un pool: cada `acquire()` da una
+    /// conexión exclusiva. Si todas están en uso, abre una nueva (hasta el
+    /// máximo configurado).
+    SqlServer(Arc<SqlServerPool>),
     /// MySQL/MariaDB nativo (mysql_async). Pool maneja conexiones internas.
     Mysql(Arc<mysql_async::Pool>),
 }
@@ -49,6 +51,112 @@ impl OpenedConnection {
             OpenedConnection::Odbc(_) => "odbc",
             OpenedConnection::SqlServer(_) => "sql_server",
             OpenedConnection::Mysql(_) => "mysql",
+        }
+    }
+}
+
+/// Spec necesaria para abrir conexiones SQL Server bajo demanda.
+#[derive(Clone, Debug)]
+pub struct SqlServerSpec {
+    pub conn_name: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: Option<String>,
+    pub database: String,
+    pub encrypt: String,
+    pub trust_server_certificate: bool,
+}
+
+/// Pool de conexiones SQL Server. Sirve clientes de a uno; si todas están
+/// ocupadas, abre una nueva hasta el máximo. Permite paralelismo real sobre
+/// la misma conexión lógica del config (`name`).
+pub struct SqlServerPool {
+    spec: SqlServerSpec,
+    idle: Mutex<Vec<SqlServerClient>>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    max: usize,
+}
+
+const SQLSERVER_POOL_MAX: usize = 8;
+
+impl SqlServerPool {
+    pub fn new(spec: SqlServerSpec) -> Self {
+        Self {
+            spec,
+            idle: Mutex::new(Vec::new()),
+            semaphore: Arc::new(tokio::sync::Semaphore::new(SQLSERVER_POOL_MAX)),
+            max: SQLSERVER_POOL_MAX,
+        }
+    }
+
+    pub fn max(&self) -> usize {
+        self.max
+    }
+
+    pub fn spec(&self) -> &SqlServerSpec {
+        &self.spec
+    }
+
+    /// Toma una conexión del pool (de las idle o abre una nueva). El permiso
+    /// del semáforo se libera cuando se hace `release(client)`.
+    pub async fn acquire(self: &Arc<Self>) -> Result<SqlServerLease> {
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| anyhow!("SQL Server pool semaphore: {e}"))?;
+        let existing = {
+            let mut idle = self.idle.lock().await;
+            idle.pop()
+        };
+        let client = match existing {
+            Some(c) => c,
+            None => {
+                open_sql_server(
+                    &self.spec.conn_name,
+                    &self.spec.host,
+                    self.spec.port,
+                    &self.spec.user,
+                    self.spec.password.as_deref(),
+                    &self.spec.database,
+                    &self.spec.encrypt,
+                    self.spec.trust_server_certificate,
+                )
+                .await?
+            }
+        };
+        Ok(SqlServerLease {
+            pool: self.clone(),
+            client: Some(client),
+            _permit: permit,
+        })
+    }
+}
+
+/// RAII: al droppear, devuelve el cliente al pool.
+pub struct SqlServerLease {
+    pool: Arc<SqlServerPool>,
+    client: Option<SqlServerClient>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl SqlServerLease {
+    pub fn client_mut(&mut self) -> &mut SqlServerClient {
+        self.client.as_mut().expect("client present until drop")
+    }
+}
+
+impl Drop for SqlServerLease {
+    fn drop(&mut self) {
+        if let Some(c) = self.client.take() {
+            let pool = self.pool.clone();
+            // Devolver al idle en un task para no bloquear el drop.
+            tokio::spawn(async move {
+                let mut idle = pool.idle.lock().await;
+                idle.push(c);
+            });
         }
     }
 }
@@ -188,7 +296,9 @@ async fn open_connection(conn: &Connection) -> Result<OpenedConnection> {
             encrypt,
             trust_server_certificate,
         } => {
-            let client = open_sql_server(
+            // Probamos abrir 1 conexión para validar credenciales/red. Si
+            // funciona, devolvemos un pool que maneja N concurrentes.
+            let probe = open_sql_server(
                 &conn.name,
                 host,
                 *port,
@@ -199,7 +309,23 @@ async fn open_connection(conn: &Connection) -> Result<OpenedConnection> {
                 *trust_server_certificate,
             )
             .await?;
-            Ok(OpenedConnection::SqlServer(Arc::new(Mutex::new(client))))
+            let spec = SqlServerSpec {
+                conn_name: conn.name.clone(),
+                host: host.clone(),
+                port: *port,
+                user: user.clone(),
+                password: password.clone(),
+                database: database.clone(),
+                encrypt: encrypt.clone(),
+                trust_server_certificate: *trust_server_certificate,
+            };
+            let pool = Arc::new(SqlServerPool::new(spec));
+            // Sembrar la conexión probada para no descartarla.
+            {
+                let mut idle = pool.idle.lock().await;
+                idle.push(probe);
+            }
+            Ok(OpenedConnection::SqlServer(pool))
         }
         ConnectionKind::Mysql {
             host,
@@ -240,6 +366,9 @@ async fn open_sql_server(
     cfg.host(host);
     cfg.port(port);
     cfg.database(database);
+    // Marca para que el Monitor SQL identifique las sesiones que abrimos
+    // como "Milhouse" en sys.dm_exec_sessions.program_name.
+    cfg.application_name(format!("milhouse/{conn_name}"));
     cfg.authentication(AuthMethod::sql_server(user, password.unwrap_or("")));
     cfg.encryption(match encrypt.to_ascii_lowercase().as_str() {
         "off" | "false" | "no" => EncryptionLevel::Off,
@@ -414,6 +543,9 @@ pub struct StepContext {
     pub tables: TableStore,
     pub connections: Arc<ConnectionPool>,
     pub cancel: CancellationToken,
+    /// Parámetros resueltos para esta ejecución (`:nombre` → valor).
+    /// Vacío si el proyecto no declara parámetros.
+    pub params: Arc<crate::engine::params::ResolvedParams>,
 }
 
 impl StepContext {

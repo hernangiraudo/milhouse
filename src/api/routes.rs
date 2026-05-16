@@ -221,6 +221,127 @@ pub async fn slugify_endpoint(
     Json(json!({ "filename": format!("{s}.json") }))
 }
 
+/// POST /api/parameters/parse-excel
+/// Body: xlsx binario. Devuelve `{ values: [string], rows_total: usize }`.
+/// Lee la primera columna de la primera hoja, descartando blancos. Si la
+/// primera fila parece header (texto que coincide con nombres comunes), la
+/// salta.
+pub async fn parse_excel_for_param(
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use calamine::{open_workbook_from_rs, Data, Reader, Xlsx};
+    let cursor = std::io::Cursor::new(body.to_vec());
+    let mut workbook: Xlsx<_> = open_workbook_from_rs(cursor)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("xlsx inválido: {e}")))?;
+    let sheet_name = workbook
+        .sheet_names()
+        .first()
+        .cloned()
+        .ok_or((StatusCode::BAD_REQUEST, "xlsx sin hojas".to_string()))?;
+    let range = workbook
+        .worksheet_range(&sheet_name)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("hoja `{sheet_name}`: {e}")))?;
+    let mut values: Vec<String> = Vec::new();
+    let mut first = true;
+    let header_hints = ["id", "comitente", "cliente", "codigo", "código", "numero", "número"];
+    for row in range.rows() {
+        let Some(cell) = row.first() else { continue };
+        let raw = match cell {
+            Data::Empty => String::new(),
+            Data::String(s) => s.trim().to_string(),
+            Data::Float(f) => {
+                if (f.fract()).abs() < f64::EPSILON {
+                    format!("{}", *f as i64)
+                } else {
+                    f.to_string()
+                }
+            }
+            Data::Int(i) => i.to_string(),
+            Data::Bool(b) => b.to_string(),
+            Data::DateTime(d) => d.to_string(),
+            Data::Error(_) => String::new(),
+            Data::DateTimeIso(s) | Data::DurationIso(s) => s.trim().to_string(),
+        };
+        if first {
+            first = false;
+            // Saltar header si parece etiqueta y no un valor real.
+            if header_hints
+                .iter()
+                .any(|h| raw.eq_ignore_ascii_case(h))
+            {
+                continue;
+            }
+        }
+        if raw.is_empty() {
+            continue;
+        }
+        values.push(raw);
+    }
+    Ok(Json(json!({
+        "values": values,
+        "rows_total": values.len(),
+        "sheet": sheet_name,
+    })))
+}
+
+/// Devuelve los nombres de parámetros referenciados como `:nombre` en un
+/// texto. Ignora `::` (casts) y referencias dentro de strings/comentarios.
+fn scan_param_refs(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    let n = bytes.len();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line = false;
+    let mut in_block = false;
+    while i < n {
+        let c = bytes[i] as char;
+        let nx = if i + 1 < n { bytes[i + 1] as char } else { '\0' };
+        if in_line {
+            if c == '\n' { in_line = false; }
+            i += 1;
+            continue;
+        }
+        if in_block {
+            if c == '*' && nx == '/' { in_block = false; i += 2; continue; }
+            i += 1;
+            continue;
+        }
+        if in_single {
+            if c == '\'' {
+                if nx == '\'' { i += 2; continue; }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if c == '"' { in_double = false; }
+            i += 1;
+            continue;
+        }
+        if c == '\'' { in_single = true; i += 1; continue; }
+        if c == '"' { in_double = true; i += 1; continue; }
+        if c == '-' && nx == '-' { in_line = true; i += 2; continue; }
+        if c == '/' && nx == '*' { in_block = true; i += 2; continue; }
+        if c == ':' && nx.is_ascii_alphabetic() {
+            // Evitar :: (cast)
+            if i > 0 && bytes[i - 1] as char == ':' { i += 1; continue; }
+            let mut end = i + 1;
+            while end < n {
+                let ch = bytes[end] as char;
+                if ch.is_ascii_alphanumeric() || ch == '_' { end += 1; } else { break; }
+            }
+            out.push(text[i + 1..end].to_string());
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
 pub async fn create_job(
     State(state): State<AppState>,
     Json(req): Json<RunJobReq>,
@@ -245,6 +366,86 @@ pub async fn create_job(
             );
         } else {
             tracing::info!("assigned missing step_uids and saved {}", path.display());
+        }
+    }
+    // Validación: ningún paso sql_query / sql_exec puede ir sin conexión
+    // declarada. (Antes caía al `default` del pool; ahora exigimos explícita
+    // para evitar correr accidentalmente contra la base equivocada.)
+    {
+        let targets_set: Option<std::collections::HashSet<String>> = req
+            .target_steps
+            .as_ref()
+            .map(|v| v.iter().cloned().collect());
+        let mut missing: Vec<String> = Vec::new();
+        for s in &cfg.steps {
+            if let Some(targets) = &targets_set {
+                if !targets.contains(&s.id) {
+                    continue;
+                }
+            }
+            let conn = match &s.spec {
+                crate::config::StepSpec::SqlQuery { connection, .. }
+                | crate::config::StepSpec::SqlExec { connection, .. } => connection.as_deref(),
+                _ => continue,
+            };
+            if conn.map(|c| c.trim().is_empty()).unwrap_or(true) {
+                missing.push(s.id.clone());
+            }
+        }
+        if !missing.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "los siguientes pasos SQL no tienen una conexión definida: {}. \
+                     Asigná una conexión en el editor del paso antes de ejecutar.",
+                    missing.join(", ")
+                ),
+            ));
+        }
+    }
+
+    // Validación: si algún step que se va a ejecutar referencia `:param` y
+    // ese parámetro no tiene valor en `req.parameters`, abortar con error
+    // claro (en lugar de fallar a mitad de la ejecución).
+    {
+        let targets_set: Option<std::collections::HashSet<String>> = req
+            .target_steps
+            .as_ref()
+            .map(|v| v.iter().cloned().collect());
+        let mut missing_params: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for s in &cfg.steps {
+            if let Some(targets) = &targets_set {
+                if !targets.contains(&s.id) {
+                    continue;
+                }
+            }
+            let texts: Vec<&str> = match &s.spec {
+                crate::config::StepSpec::SqlQuery { query, .. }
+                | crate::config::StepSpec::SqlExec { query, .. } => vec![query.as_str()],
+                crate::config::StepSpec::FilterAndSubset { filter, .. } => {
+                    filter.as_deref().into_iter().collect()
+                }
+                _ => continue,
+            };
+            for t in texts {
+                for name in scan_param_refs(t) {
+                    if !req.parameters.contains_key(&name) {
+                        missing_params.insert(name);
+                    }
+                }
+            }
+        }
+        if !missing_params.is_empty() {
+            let names: Vec<String> = missing_params.into_iter().collect();
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "los siguientes parámetros usados en los pasos no fueron resueltos: {}. \
+                     Pasalos en el campo `parameters` o seleccioná una respuesta guardada.",
+                    names.join(", ")
+                ),
+            ));
         }
     }
     let job_id = req
@@ -282,6 +483,7 @@ pub async fn create_job(
             .map(|v| v.iter().cloned().collect()),
         stop_on_failure: req.stop_on_failure,
         use_preload: req.use_preload,
+        params: req.parameters.clone(),
     };
     let handle = run_job(
         job_id.clone(),
@@ -705,25 +907,23 @@ pub async fn check_sql_endpoint(
                 })),
             }
         }
-        crate::engine::OpenedConnection::SqlServer(client) => {
-            let client = client.clone();
-            // SET NOEXEC ON hace que el server compile/parse/bind pero no
-            // ejecute. Cualquier error de sintaxis o nombre inválido se
-            // reporta como si fuera una ejecución normal. Después apagamos
-            // NOEXEC para no dejar la sesión inhabilitada.
+        crate::engine::OpenedConnection::SqlServer(pool) => {
+            let pool = pool.clone();
             let wrapped = format!(
                 "SET NOEXEC ON;\n{};\nSET NOEXEC OFF;",
                 sql_trimmed.trim_end_matches(';')
             );
             let check_future = async move {
                 use futures::TryStreamExt;
-                let mut guard = client.lock().await;
-                let mut stream = match guard.simple_query(wrapped).await {
-                    Ok(s) => s,
-                    Err(e) => return Err::<(), String>(format!("{e}")),
+                let mut lease = match pool.acquire().await {
+                    Ok(l) => l,
+                    Err(e) => return Err::<(), String>(format!("{e:#}")),
                 };
-                // Drenar el stream para capturar errores que tiberius reporta
-                // como items, no como Err inmediato del Future.
+                let client = lease.client_mut();
+                let mut stream = match client.simple_query(wrapped).await {
+                    Ok(s) => s,
+                    Err(e) => return Err(format!("{e}")),
+                };
                 loop {
                     match stream.try_next().await {
                         Ok(Some(_)) => continue,
@@ -1435,6 +1635,144 @@ pub async fn preload_status(Path(name): Path<String>) -> Json<Value> {
     let has = crate::runs::bundle::has_preload(&name);
     let steps = crate::runs::bundle::preloaded_step_ids(&name);
     Json(json!({ "has_preload": has, "preloaded_step_ids": steps }))
+}
+
+// =====================================================================
+// SQL Monitor: ver procesos activos y matar sesiones (solo SQL Server)
+// =====================================================================
+
+/// GET /api/sql-monitor/:connection
+/// Lista procesos activos en la base SQL Server indicada. Cada fila trae
+/// `is_milhouse: bool` (true si la sesión fue abierta por Milhouse, detectado
+/// por `program_name LIKE 'milhouse/%'`).
+pub async fn sql_monitor_list(
+    State(state): State<AppState>,
+    Path(connection): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let opened = state
+        .pool
+        .get_any(Some(&connection))
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let pool = match &*opened {
+        crate::engine::OpenedConnection::SqlServer(p) => p.clone(),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "el monitor SQL solo está disponible para conexiones SQL Server".into(),
+            ));
+        }
+    };
+    // Query inspirada en la del usuario, con program_name para distinguir
+    // sesiones de Milhouse y un orden estable.
+    const SQL: &str = "SELECT DISTINCT
+            req.session_id,
+            req.blocking_session_id,
+            s.login_name,
+            s.host_name,
+            s.program_name,
+            DB_NAME(req.database_id) AS database_name,
+            req.status,
+            req.command,
+            req.cpu_time,
+            CAST(req.total_elapsed_time / 60000.0 AS DECIMAL(10,2)) AS elapsed_minutes,
+            sqltext.text AS sql_text
+         FROM sys.dm_exec_requests req
+         JOIN sys.dm_exec_sessions s ON req.session_id = s.session_id
+         CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS sqltext
+         WHERE req.session_id <> @@SPID
+           AND s.login_name <> ''
+         ORDER BY elapsed_minutes DESC";
+
+    use futures::TryStreamExt;
+    let mut lease = pool.acquire().await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("acquire: {e:#}"))
+    })?;
+    let client = lease.client_mut();
+    let mut stream = client
+        .simple_query(SQL)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("query: {e}")))?;
+
+    let mut rows: Vec<Value> = Vec::new();
+    while let Some(item) = stream
+        .try_next()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("next: {e}")))?
+    {
+        use tiberius::QueryItem;
+        if let QueryItem::Row(row) = item {
+            let session_id: Option<i32> = row.try_get(0).ok().flatten();
+            let blocking_session_id: Option<i32> = row.try_get(1).ok().flatten();
+            let login_name: Option<&str> = row.try_get(2).ok().flatten();
+            let host_name: Option<&str> = row.try_get(3).ok().flatten();
+            let program_name: Option<&str> = row.try_get(4).ok().flatten();
+            let database_name: Option<&str> = row.try_get(5).ok().flatten();
+            let status: Option<&str> = row.try_get(6).ok().flatten();
+            let command: Option<&str> = row.try_get(7).ok().flatten();
+            let cpu_time: Option<i32> = row.try_get(8).ok().flatten();
+            // elapsed_minutes: DECIMAL → tiberius lo expone como Numeric
+            let elapsed_text: Option<String> = row
+                .try_get::<tiberius::numeric::Numeric, _>(9)
+                .ok()
+                .flatten()
+                .map(|n| n.to_string());
+            let sql_text: Option<&str> = row.try_get(10).ok().flatten();
+            let is_milhouse = program_name
+                .map(|p| p.starts_with("milhouse/"))
+                .unwrap_or(false);
+            rows.push(json!({
+                "session_id": session_id,
+                "blocking_session_id": blocking_session_id,
+                "login_name": login_name,
+                "host_name": host_name,
+                "program_name": program_name,
+                "database_name": database_name,
+                "status": status,
+                "command": command,
+                "cpu_time": cpu_time,
+                "elapsed_minutes": elapsed_text,
+                "sql_text": sql_text,
+                "is_milhouse": is_milhouse,
+            }));
+        }
+    }
+    Ok(Json(json!({ "rows": rows })))
+}
+
+/// POST /api/sql-monitor/:connection/kill/:session_id
+pub async fn sql_monitor_kill(
+    State(state): State<AppState>,
+    Path((connection, session_id)): Path<(String, i32)>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if session_id <= 0 {
+        return Err((StatusCode::BAD_REQUEST, "session_id inválido".into()));
+    }
+    let opened = state
+        .pool
+        .get_any(Some(&connection))
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let pool = match &*opened {
+        crate::engine::OpenedConnection::SqlServer(p) => p.clone(),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "el monitor SQL solo está disponible para conexiones SQL Server".into(),
+            ));
+        }
+    };
+    let mut lease = pool
+        .acquire()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let client = lease.client_mut();
+    let sql = format!("KILL {session_id}");
+    client
+        .simple_query(sql)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("KILL: {e}")))?;
+    Ok(Json(json!({ "status": "ok", "killed": session_id })))
 }
 
 fn sanitize_for_path(s: &str) -> String {

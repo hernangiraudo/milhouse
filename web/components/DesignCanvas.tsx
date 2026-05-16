@@ -382,6 +382,8 @@ export interface DesignCanvasProps {
   stepStates?: Record<string, NodeStatus>;
   /** Lanzar ejecución parcial/total. */
   onRun?: (mode: RunMode) => void;
+  /** Cancelar el job activo (si hay). */
+  onCancelJob?: () => void;
 }
 
 export function DesignCanvas({
@@ -397,6 +399,7 @@ export function DesignCanvas({
   onDeleteGroup,
   stepStates,
   onRun,
+  onCancelJob,
 }: DesignCanvasProps) {
   const theme = useTheme();
   const dialog = useDialog();
@@ -846,6 +849,32 @@ export function DesignCanvas({
                   )}
                 </text>
               )}
+              {(step.kind === "sql_query" || step.kind === "sql_exec") &&
+                !(step as Step & { connection?: string | null }).connection && (
+                  <g pointerEvents="none">
+                    <title>
+                      Paso SQL sin conexión asignada — no se va a poder ejecutar
+                    </title>
+                    <circle
+                      cx={14}
+                      cy={n.h - 12}
+                      r={8}
+                      fill="#ef4444"
+                      stroke="#7f1d1d"
+                      strokeWidth={1.2}
+                    />
+                    <text
+                      x={14}
+                      y={n.h - 8}
+                      fontSize={11}
+                      fontWeight={700}
+                      textAnchor="middle"
+                      fill="#ffffff"
+                    >
+                      !
+                    </text>
+                  </g>
+                )}
               {badge && (
                 <g transform={`translate(${n.w - 26}, 6)`} pointerEvents="none">
                   <circle
@@ -1064,6 +1093,23 @@ export function DesignCanvas({
                   <div className="my-1 border-t border-surface" />
                 </>
               )}
+              {onCancelJob &&
+                (stepStates?.[menu.nodeId] === "running" ||
+                  stepStates?.[menu.nodeId] === "ready") && (
+                  <>
+                    <button
+                      onClick={() => {
+                        onCancelJob();
+                        setMenu(null);
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-800 flex items-center gap-2 text-red-300"
+                    >
+                      <span style={{ width: 16, textAlign: "center" }}>⏹</span>
+                      <span>Cancelar ejecución</span>
+                    </button>
+                    <div className="my-1 border-t border-surface" />
+                  </>
+                )}
               {onRun && (
                 <>
                   <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-dim">

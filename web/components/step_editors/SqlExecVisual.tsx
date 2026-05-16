@@ -53,8 +53,9 @@ export function SqlExecVisual({
               })
             }
             className="w-full milhouse-field"
+            style={!conn ? { borderColor: "#ef4444" } : undefined}
           >
-            <option value="">(default)</option>
+            <option value="">⚠ elegir conexión</option>
             {connections?.connections
               .filter((c) => c.implemented)
               .map((c) => (
@@ -63,6 +64,11 @@ export function SqlExecVisual({
                 </option>
               ))}
           </select>
+          {!conn && (
+            <p className="text-[11px] text-red-400 mt-1">
+              Sin conexión asignada — el paso no se va a ejecutar.
+            </p>
+          )}
         </Field>
         <div className="flex items-end justify-end gap-2">
           <button

@@ -82,6 +82,10 @@ export async function listJobs(): Promise<JobSummary[]> {
   return r.json();
 }
 
+/** Valor de parámetro: string (escalar) o lista de strings. El backend usa
+ *  el `kind` declarado del parámetro para decidir si lo cita o no en SQL. */
+export type ParamValue = string | string[];
+
 export async function createJob(
   configName: string,
   opts?: {
@@ -91,6 +95,7 @@ export async function createJob(
     stop_on_failure?: boolean;
     use_preload?: boolean;
     existing_job_id?: string | null;
+    parameters?: Record<string, ParamValue>;
   },
 ): Promise<{ job_id: string }> {
   const r = await fetch(`${API_BASE}/api/jobs`, {
@@ -104,9 +109,27 @@ export async function createJob(
       stop_on_failure: opts?.stop_on_failure ?? false,
       use_preload: opts?.use_preload ?? false,
       existing_job_id: opts?.existing_job_id ?? null,
+      parameters: opts?.parameters ?? {},
     }),
   });
   if (!r.ok) throw new Error(`createJob ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+export async function parseExcelForParam(file: File): Promise<{
+  values: string[];
+  rows_total: number;
+  sheet: string;
+}> {
+  const r = await fetch(`${API_BASE}/api/parameters/parse-excel`, {
+    method: "POST",
+    headers: {
+      "content-type":
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    },
+    body: file,
+  });
+  if (!r.ok) throw new Error(`parseExcelForParam ${r.status} ${await r.text()}`);
   return r.json();
 }
 
