@@ -27,8 +27,11 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at          TIMESTAMP NOT NULL,
     finished_at         TIMESTAMP,
     duration_ms         BIGINT,
-    total_steps         INTEGER NOT NULL DEFAULT 0
+    total_steps         INTEGER NOT NULL DEFAULT 0,
+    run_name            VARCHAR
 );
+-- Migración para bases creadas antes de tener run_name.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_name VARCHAR;
 
 CREATE TABLE IF NOT EXISTS step_runs (
     job_id           VARCHAR NOT NULL,
@@ -302,12 +305,14 @@ impl RunStore {
         debug: bool,
         started_at: DateTime<Utc>,
         total_steps: usize,
+        run_name: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn.clone();
         let job_id = job_id.to_string();
         let config_name = config_name.to_string();
         let config_display_name = config_display_name.map(|s| s.to_string());
         let user = user.map(|s| s.to_string());
+        let run_name = run_name.map(|s| s.to_string());
         tokio::task::spawn_blocking(move || -> Result<()> {
             let guard = conn.blocking_lock();
             // Si ya existe, lo dejamos pasar (reutilización en re-ejecución
@@ -320,15 +325,28 @@ impl RunStore {
                 )
                 .unwrap_or(0);
             if exists > 0 {
-                guard.execute(
-                    "UPDATE runs SET status = 'running', finished_at = NULL, duration_ms = NULL WHERE job_id = ?",
-                    params![job_id],
-                )?;
+                // Re-ejecución: actualizar status + run_name (si vino uno nuevo).
+                if let Some(rn) = &run_name {
+                    guard.execute(
+                        "UPDATE runs SET status = 'running', finished_at = NULL,
+                                          duration_ms = NULL, run_name = ?
+                         WHERE job_id = ?",
+                        params![rn, job_id],
+                    )?;
+                } else {
+                    guard.execute(
+                        "UPDATE runs SET status = 'running', finished_at = NULL,
+                                          duration_ms = NULL
+                         WHERE job_id = ?",
+                        params![job_id],
+                    )?;
+                }
                 return Ok(());
             }
             guard.execute(
-                "INSERT INTO runs (job_id, config_name, config_display_name, user_name, debug, status, started_at, total_steps)
-                 VALUES (?, ?, ?, ?, ?, 'running', ?, ?)",
+                "INSERT INTO runs (job_id, config_name, config_display_name, user_name,
+                                    debug, status, started_at, total_steps, run_name)
+                 VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)",
                 params![
                     job_id,
                     config_name,
@@ -336,7 +354,8 @@ impl RunStore {
                     user,
                     debug,
                     started_at.naive_utc().to_string(),
-                    total_steps as i64
+                    total_steps as i64,
+                    run_name
                 ],
             )?;
             Ok(())

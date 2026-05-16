@@ -82,6 +82,13 @@ const KIND_MENU: KindMeta[] = [
     textPrimary: { dark: "#ecfccb", light: "#365314" },
     textSecondary: { dark: "#bef264", light: "#4d7c0f" },
   },
+  {
+    value: "union", label: "Union (apilar datasets)", icon: "⊕",
+    stroke: { dark: "#facc15", light: "#a16207" },
+    fill: { dark: "rgba(113,63,18,0.8)", light: "#fef9c3" },
+    textPrimary: { dark: "#fef9c3", light: "#713f12" },
+    textSecondary: { dark: "#fde047", light: "#a16207" },
+  },
 ];
 
 const FALLBACK_META: KindMeta = {
@@ -384,6 +391,14 @@ export interface DesignCanvasProps {
   onRun?: (mode: RunMode) => void;
   /** Cancelar el job activo (si hay). */
   onCancelJob?: () => void;
+  /** Vista del lienzo. */
+  viewMode?: "nodes" | "nodes_and_tables";
+  onChangeViewMode?: (mode: "nodes" | "nodes_and_tables") => void;
+  /** Step ids que tienen dataset disponible en el último run (para
+   *  pintar el icono de tabla en color y permitir click). */
+  tablesAvailable?: Record<string, number>;
+  /** Click sobre el icono de tabla a la salida de un paso. */
+  onOpenTable?: (stepId: string) => void;
 }
 
 export function DesignCanvas({
@@ -400,6 +415,10 @@ export function DesignCanvas({
   stepStates,
   onRun,
   onCancelJob,
+  viewMode = "nodes",
+  onChangeViewMode,
+  tablesAvailable,
+  onOpenTable,
 }: DesignCanvasProps) {
   const theme = useTheme();
   const dialog = useDialog();
@@ -589,8 +608,51 @@ export function DesignCanvas({
       className="relative bg-panel border border-surface rounded-xl overflow-auto"
       style={{ height: 480 }}
     >
+      {/* Toggle de vista: solo nodos vs nodos + tablas */}
+      {onChangeViewMode && (
+        <div
+          className="absolute top-2 right-2 z-10 flex items-center gap-0 rounded-md border overflow-hidden shadow-sm"
+          style={{ borderColor: "var(--border-strong)", background: "var(--panel-2)" }}
+        >
+          <button
+            type="button"
+            onClick={() => onChangeViewMode("nodes")}
+            title="Solo nodos"
+            className={`px-2 py-1 text-base leading-none ${
+              viewMode === "nodes" ? "text-app" : "text-dim hover:text-app"
+            }`}
+            style={
+              viewMode === "nodes"
+                ? { background: "var(--accent)", color: "var(--accent-ink)" }
+                : undefined
+            }
+          >
+            ▢
+          </button>
+          <button
+            type="button"
+            onClick={() => onChangeViewMode("nodes_and_tables")}
+            title="Nodos + tablas (muestra los datasets que produce cada paso)"
+            className={`px-2 py-1 text-base leading-none ${
+              viewMode === "nodes_and_tables"
+                ? "text-app"
+                : "text-dim hover:text-app"
+            }`}
+            style={
+              viewMode === "nodes_and_tables"
+                ? { background: "var(--accent)", color: "var(--accent-ink)" }
+                : undefined
+            }
+          >
+            ▦
+          </button>
+        </div>
+      )}
       <svg
-        width={Math.max(layout.width, 800)}
+        width={Math.max(
+          layout.width + (viewMode === "nodes_and_tables" ? 130 : 0),
+          800,
+        )}
         height={Math.max(layout.height, 400)}
         onMouseDown={onSvgMouseDown}
         onMouseMove={onSvgMouseMove}
@@ -936,6 +998,108 @@ export function DesignCanvas({
                   setEdgeDrag(null);
                 }}
               />
+              {/* Ícono de tabla a la salida (modo "nodes_and_tables") */}
+              {viewMode === "nodes_and_tables" &&
+                (step as Step & { output_table?: string }).output_table && (() => {
+                  const tableName = (step as Step & { output_table?: string })
+                    .output_table!;
+                  const available = !!tablesAvailable?.[step.id];
+                  const TBL_W = 90;
+                  const TBL_H = 32;
+                  const TBL_X = n.w + 18;
+                  const TBL_Y = n.h / 2 - TBL_H / 2;
+                  const handler = available && onOpenTable
+                    ? (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        onOpenTable(step.id);
+                      }
+                    : undefined;
+                  return (
+                    <g
+                      transform={`translate(${TBL_X}, ${TBL_Y})`}
+                      style={{
+                        cursor: available ? "pointer" : "default",
+                        opacity: available ? 1 : 0.55,
+                      }}
+                      onClick={handler}
+                    >
+                      {/* línea de conexión nodo → tabla */}
+                      <line
+                        x1={-18}
+                        y1={TBL_H / 2}
+                        x2={0}
+                        y2={TBL_H / 2}
+                        stroke={
+                          theme === "light" ? "#475569" : "#64748b"
+                        }
+                        strokeWidth={1.4}
+                        strokeDasharray="3 3"
+                      />
+                      <title>
+                        {available
+                          ? `Ver datos de ${tableName} (último run)`
+                          : `${tableName} (todavía no hay datos persistidos)`}
+                      </title>
+                      <rect
+                        width={TBL_W}
+                        height={TBL_H}
+                        rx={4}
+                        fill={
+                          available
+                            ? theme === "light"
+                              ? "#e0f2fe"
+                              : "rgba(14,116,144,0.25)"
+                            : theme === "light"
+                            ? "#f1f5f9"
+                            : "rgba(30,41,59,0.6)"
+                        }
+                        stroke={
+                          available
+                            ? theme === "light"
+                              ? "#0e7490"
+                              : "#22d3ee"
+                            : theme === "light"
+                            ? "#94a3b8"
+                            : "#475569"
+                        }
+                        strokeWidth={1.4}
+                      />
+                      {/* iconito de tabla (filas) */}
+                      <g
+                        transform="translate(8, 8)"
+                        stroke={
+                          available
+                            ? theme === "light"
+                              ? "#0e7490"
+                              : "#22d3ee"
+                            : theme === "light"
+                            ? "#64748b"
+                            : "#94a3b8"
+                        }
+                        strokeWidth={1.4}
+                        fill="none"
+                      >
+                        <rect x={0} y={0} width={14} height={16} rx={1} />
+                        <line x1={0} y1={5} x2={14} y2={5} />
+                        <line x1={0} y1={10} x2={14} y2={10} />
+                        <line x1={7} y1={0} x2={7} y2={16} />
+                      </g>
+                      <text
+                        x={28}
+                        y={20}
+                        fontSize={11}
+                        fontFamily="ui-monospace, monospace"
+                        fill={
+                          theme === "light" ? "#0c4a6e" : "#cffafe"
+                        }
+                      >
+                        {tableName.length > 8
+                          ? tableName.slice(0, 7) + "…"
+                          : tableName}
+                      </text>
+                    </g>
+                  );
+                })()}
             </g>
           );
         })}

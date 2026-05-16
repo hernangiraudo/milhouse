@@ -88,6 +88,9 @@ pub struct JobState {
     /// Nombre legible del config (campo `name` dentro del JSON).
     #[serde(default)]
     pub config_display_name: Option<String>,
+    /// Etiqueta opcional de la corrida.
+    #[serde(default)]
+    pub run_name: Option<String>,
     #[serde(default)]
     pub user: Option<String>,
     #[serde(default)]

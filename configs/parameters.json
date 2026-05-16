@@ -1,0 +1,26 @@
+{
+  "parameters": [
+    {
+      "name": "FechaDesde",
+      "kind": "date",
+      "label": "Fecha desde",
+      "description": null
+    },
+    {
+      "name": "FechaHasta",
+      "kind": "date",
+      "label": null,
+      "description": null
+    }
+  ],
+  "presets": [
+    {
+      "name": "YTD",
+      "description": "Year to Date 2026",
+      "values": {
+        "FechaHasta": "2026-05-15",
+        "FechaDesde": "2025-12-31"
+      }
+    }
+  ]
+}

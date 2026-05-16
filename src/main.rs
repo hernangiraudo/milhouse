@@ -25,9 +25,20 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "configs/connections.json".into());
     let users_path =
         std::env::var("MILHOUSE_USERS_PATH").unwrap_or_else(|_| "configs/users.json".into());
+    let global_params_path = std::env::var("MILHOUSE_GLOBAL_PARAMS_PATH")
+        .unwrap_or_else(|_| "configs/parameters.json".into());
 
     let connections = load_connections_or_warn(&connections_path);
     let users = load_users_or_warn(&users_path);
+    let global_params = milhouse::config::GlobalParamsFile::load_or_empty(
+        std::path::Path::new(&global_params_path),
+    );
+    tracing::info!(
+        "loaded {} global parameter(s) and {} preset(s) from {}",
+        global_params.parameters.len(),
+        global_params.presets.len(),
+        global_params_path
+    );
 
     // Pool compartido del servidor (los jobs harán su propio pool actualizado
     // a partir de connections; pero compartimos uno solo para acceso de
@@ -50,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
         users: Arc::new(RwLock::new(users)),
         pool,
         run_store: Arc::new(RwLock::new(run_store_opt)),
+        global_params: Arc::new(RwLock::new(global_params)),
+        global_params_path: global_params_path.clone(),
     };
 
     // Worker que dispara schedules cada minuto (puede correr siempre; chequea
@@ -92,6 +105,10 @@ async fn main() -> anyhow::Result<()> {
             post(routes::test_connection_endpoint),
         )
         .route(
+            "/api/connections/:name/duplicate",
+            post(routes::duplicate_connection),
+        )
+        .route(
             "/api/connections/:name/tables",
             get(routes::list_tables_endpoint),
         )
@@ -112,6 +129,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/parameters/parse-excel",
             post(routes::parse_excel_for_param),
+        )
+        .route(
+            "/api/parameters",
+            get(routes::get_global_params).put(routes::put_global_params),
         )
         .route("/api/ai/available", get(routes::ai_available))
         .route("/api/ai/build-step", post(routes::ai_build_step))

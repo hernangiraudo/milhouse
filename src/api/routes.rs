@@ -226,6 +226,48 @@ pub async fn slugify_endpoint(
 /// Lee la primera columna de la primera hoja, descartando blancos. Si la
 /// primera fila parece header (texto que coincide con nombres comunes), la
 /// salta.
+// =====================================================================
+// Parámetros y respuestas globales (compartidos entre proyectos)
+// =====================================================================
+
+/// GET /api/parameters → {parameters, presets}
+pub async fn get_global_params(State(state): State<AppState>) -> Json<Value> {
+    let g = state.global_params.read().await.clone();
+    Json(serde_json::to_value(&g).unwrap_or(Value::Null))
+}
+
+/// PUT /api/parameters → reemplaza completo + persiste.
+pub async fn put_global_params(
+    State(state): State<AppState>,
+    Json(body): Json<crate::config::GlobalParamsFile>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    // Validar nombres únicos en parameters.
+    let mut seen = std::collections::HashSet::new();
+    for p in &body.parameters {
+        if p.name.trim().is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "hay parámetros sin nombre".into(),
+            ));
+        }
+        if !seen.insert(p.name.clone()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("nombre duplicado: {}", p.name),
+            ));
+        }
+    }
+    let path = std::path::PathBuf::from(&state.global_params_path);
+    body.save(&path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("escribir {}: {e}", path.display()),
+        )
+    })?;
+    *state.global_params.write().await = body;
+    Ok(Json(json!({ "status": "ok" })))
+}
+
 pub async fn parse_excel_for_param(
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, (StatusCode, String)> {
@@ -404,6 +446,31 @@ pub async fn create_job(
         }
     }
 
+    // Merge de parámetros y respuestas globales con los locales del config.
+    // Regla: local pisa global por nombre. El scheduler ve la lista
+    // mergeada vía `cfg.parameters`, así el motor conoce el kind de cada
+    // parámetro al sustituir `:nombre`.
+    {
+        let globals = state.global_params.read().await.clone();
+        let local_names: std::collections::HashSet<String> = cfg
+            .parameters
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        for g in &globals.parameters {
+            if !local_names.contains(&g.name) {
+                cfg.parameters.push(g.clone());
+            }
+        }
+        let local_presets: std::collections::HashSet<String> =
+            cfg.presets.iter().map(|p| p.name.clone()).collect();
+        for g in &globals.presets {
+            if !local_presets.contains(&g.name) {
+                cfg.presets.push(g.clone());
+            }
+        }
+    }
+
     // Validación: si algún step que se va a ejecutar referencia `:param` y
     // ese parámetro no tiene valor en `req.parameters`, abortar con error
     // claro (en lugar de fallar a mitad de la ejecución).
@@ -484,6 +551,7 @@ pub async fn create_job(
         stop_on_failure: req.stop_on_failure,
         use_preload: req.use_preload,
         params: req.parameters.clone(),
+        run_name: req.run_name.clone(),
     };
     let handle = run_job(
         job_id.clone(),
@@ -714,6 +782,63 @@ pub async fn update_connection(
     state.pool.replace_file(file.clone()).await;
     *state.connections.write().await = file;
     Ok(Json(json!({ "status": "ok", "name": req.name })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct DuplicateConnectionReq {
+    pub new_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// POST /api/connections/:name/duplicate
+/// Copia la conexión existente (incluida la password) con un nuevo nombre.
+/// El password NUNCA se devuelve al cliente; vive solo del lado server.
+pub async fn duplicate_connection(
+    State(state): State<AppState>,
+    Path(current_name): Path<String>,
+    Json(req): Json<DuplicateConnectionReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let new_name = req.new_name.trim().to_string();
+    if new_name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "el nombre nuevo es obligatorio".into()));
+    }
+    if new_name == current_name {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "el nombre nuevo es igual al original".into(),
+        ));
+    }
+    let mut file = state.connections.read().await.clone();
+    let source = file
+        .connections
+        .iter()
+        .find(|c| c.name == current_name)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("conexión `{current_name}` no encontrada"),
+            )
+        })?
+        .clone();
+    // Clonamos respetando el kind completo (con password si la había).
+    let duplicate = crate::config::Connection {
+        name: new_name.clone(),
+        description: req.description.or_else(|| {
+            source
+                .description
+                .as_ref()
+                .map(|d| format!("Copia de: {d}"))
+                .or_else(|| Some(format!("Copia de `{current_name}`")))
+        }),
+        kind: source.kind.clone(),
+    };
+    file.add(duplicate)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))?;
+    persist_connections(&state, &file).await?;
+    state.pool.replace_file(file.clone()).await;
+    *state.connections.write().await = file;
+    Ok(Json(json!({ "status": "ok", "name": new_name })))
 }
 
 pub async fn delete_connection(
@@ -1017,7 +1142,7 @@ pub async fn list_run_history(
     let store = run_store_or_503(&state).await?;
     let res = store
         .query(
-            "SELECT job_id, config_name, config_display_name, user_name, debug, status, started_at, finished_at, duration_ms, total_steps FROM runs ORDER BY started_at DESC LIMIT 100".into(),
+            "SELECT job_id, config_name, config_display_name, run_name, user_name, debug, status, started_at, finished_at, duration_ms, total_steps FROM runs ORDER BY started_at DESC LIMIT 100".into(),
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;

@@ -58,7 +58,10 @@
       "PowerShell(Get-CimInstance *)",
       "PowerShell(Stop-Process *)",
       "Bash(node *)",
-      "Bash(cargo test *)"
+      "Bash(cargo test *)",
+      "Bash(chmod +x /c/Users/hgira/rust/milhouse/scripts/setup_and_run.sh)",
+      "PowerShell($ErrorActionPreference = \"Stop\"; $null = [System.Management.Automation.Language.Parser]::ParseFile\\(\"C:\\\\Users\\\\hgira\\\\rust\\\\milhouse\\\\scripts\\\\setup_and_run.ps1\", [ref]$null, [ref]$null\\); \"ok\")",
+      "Bash(bash -n /c/Users/hgira/rust/milhouse/scripts/setup_and_run.sh)"
     ]
   }
 }

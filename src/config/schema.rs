@@ -291,6 +291,13 @@ pub enum StepSpec {
         #[serde(default)]
         output_table: Option<String>,
     },
+    /// Apila N datasets (vstack). Esquema final = unión de columnas; donde
+    /// un dataset no tiene una columna, se completa con NULL. Útil para
+    /// juntar particiones con shape similar.
+    Union {
+        inputs: Vec<String>,
+        output_table: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -397,6 +404,7 @@ impl Step {
             StepSpec::Sort { .. } => "sort",
             StepSpec::Export { .. } => "export",
             StepSpec::Procedural { .. } => "procedural",
+            StepSpec::Union { .. } => "union",
         }
     }
 
@@ -404,7 +412,8 @@ impl Step {
         match &self.spec {
             StepSpec::SqlQuery { output_table, .. }
             | StepSpec::Join { output_table, .. }
-            | StepSpec::Sort { output_table, .. } => Some(output_table.as_str()),
+            | StepSpec::Sort { output_table, .. }
+            | StepSpec::Union { output_table, .. } => Some(output_table.as_str()),
             // Para los kinds que aceptan modificar in-place: si el usuario no
             // dio output_table, el resultado va a la misma tabla input.
             StepSpec::Lookup {

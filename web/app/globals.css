@@ -126,6 +126,40 @@ body {
   background: #cbd5e1; /* slate-300 */
 }
 
+/* Tabla de datos: header sticky, banding alterno suave, hover de fila.
+   Usa tokens del tema para que funcione en light y dark sin overrides. */
+.milhouse-data-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.milhouse-data-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-2);
+  border-bottom: 2px solid var(--border-strong);
+  z-index: 1;
+}
+.milhouse-data-table tbody tr {
+  transition: background 80ms ease;
+}
+.milhouse-data-table tbody tr:nth-child(odd) {
+  background: var(--panel);
+}
+.milhouse-data-table tbody tr:nth-child(even) {
+  background: var(--panel-2);
+}
+.milhouse-data-table tbody td {
+  border-bottom: 1px solid var(--border);
+}
+/* Hover: tono cian sutil compartido con accent */
+:root[data-theme="dark"] .milhouse-data-table tbody tr:hover {
+  background: rgba(34, 211, 238, 0.08);
+}
+:root[data-theme="light"] .milhouse-data-table tbody tr:hover {
+  background: rgba(14, 116, 144, 0.08);
+}
+
 /* =====================================================================
    Light mode overrides
    Las clases Tailwind oscuras hardcodeadas en componentes (bg-panel,

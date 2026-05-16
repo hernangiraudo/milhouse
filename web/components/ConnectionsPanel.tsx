@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  API_BASE,
   createConnection,
   deleteConnection,
   listConnections,
@@ -87,6 +88,46 @@ export function ConnectionsPanel() {
     }
   }
 
+  async function onDuplicate(c: ConnectionSummary) {
+    const existing = new Set(data?.connections.map((x) => x.name) ?? []);
+    const base = `${c.name} (copia)`;
+    // Si "Foo (copia)" ya existe, probar "Foo (copia 2)", etc.
+    let defaultName = base;
+    let n = 2;
+    while (existing.has(defaultName)) {
+      defaultName = `${c.name} (copia ${n})`;
+      n += 1;
+    }
+    const newName = await dialog.prompt(
+      `Nombre para la copia de "${c.name}":`,
+      {
+        title: "Duplicar conexión",
+        defaultValue: defaultName,
+        validate: (v) => {
+          const t = v.trim();
+          if (!t) return "obligatorio";
+          if (existing.has(t)) return "ya existe una conexión con ese nombre";
+          return null;
+        },
+      },
+    );
+    if (!newName?.trim()) return;
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/connections/${encodeURIComponent(c.name)}/duplicate`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ new_name: newName.trim() }),
+        },
+      );
+      if (!r.ok) throw new Error(await r.text());
+      await load();
+    } catch (e) {
+      await dialog.alert(`No se pudo duplicar: ${e}`, { variant: "danger" });
+    }
+  }
+
   async function onTest(c: ConnectionSummary) {
     setTestResult((p) => ({
       ...p,
@@ -152,6 +193,7 @@ export function ConnectionsPanel() {
               onEdit={() => setEditing(c)}
               onDelete={() => onDelete(c.name)}
               onTest={() => onTest(c)}
+              onDuplicate={() => onDuplicate(c)}
             />
           ))}
         </div>
@@ -188,12 +230,14 @@ function ConnectionCard({
   onEdit,
   onDelete,
   onTest,
+  onDuplicate,
 }: {
   c: ConnectionSummary;
   testResult?: TestConnectionResult & { running?: boolean };
   onEdit: () => void;
   onDelete: () => void;
   onTest: () => void;
+  onDuplicate: () => void;
 }) {
   const t =
     TYPE_STYLES[c.type] ?? { color: "#94a3b8", glyph: "?", label: c.type };
@@ -265,6 +309,13 @@ function ConnectionCard({
           className="px-2 py-1 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800"
         >
           Editar
+        </button>
+        <button
+          onClick={onDuplicate}
+          className="px-2 py-1 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800"
+          title="Crear una copia con todos los parámetros incluyendo la contraseña"
+        >
+          Duplicar
         </button>
         <button
           onClick={onDelete}

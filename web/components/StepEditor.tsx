@@ -10,6 +10,7 @@ import { FilterSubsetVisual } from "./step_editors/FilterSubsetVisual";
 import { SortVisual } from "./step_editors/SortVisual";
 import { ProceduralVisual } from "./step_editors/ProceduralVisual";
 import { ExportVisual } from "./step_editors/ExportVisual";
+import { UnionVisual } from "./step_editors/UnionVisual";
 
 export type Step = Record<string, unknown> & {
   id: string;
@@ -364,6 +365,15 @@ function KindFields({
     return (
       <ExportVisual
         step={step as Parameters<typeof ExportVisual>[0]["step"]}
+        available={availableTables}
+        onChange={(next) => update(next as Partial<Step>)}
+      />
+    );
+  }
+  if (k === "union") {
+    return (
+      <UnionVisual
+        step={step as Parameters<typeof UnionVisual>[0]["step"]}
         available={availableTables}
         onChange={(next) => update(next as Partial<Step>)}
       />

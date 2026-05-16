@@ -96,6 +96,7 @@ export async function createJob(
     use_preload?: boolean;
     existing_job_id?: string | null;
     parameters?: Record<string, ParamValue>;
+    run_name?: string | null;
   },
 ): Promise<{ job_id: string }> {
   const r = await fetch(`${API_BASE}/api/jobs`, {
@@ -110,6 +111,7 @@ export async function createJob(
       use_preload: opts?.use_preload ?? false,
       existing_job_id: opts?.existing_job_id ?? null,
       parameters: opts?.parameters ?? {},
+      run_name: opts?.run_name ?? null,
     }),
   });
   if (!r.ok) throw new Error(`createJob ${r.status} ${await r.text()}`);

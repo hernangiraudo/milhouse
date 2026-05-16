@@ -47,6 +47,10 @@ pub struct RunJobReq {
     /// lista de strings.
     #[serde(default)]
     pub parameters: std::collections::HashMap<String, crate::config::ParamValue>,
+    /// Etiqueta opcional para identificar esta corrida (ej. "Cierre marzo"
+    /// o "YTD con clientes A"). Se muestra en la lista de runs.
+    #[serde(default)]
+    pub run_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -3,7 +3,7 @@ pub mod public;
 pub mod routes;
 pub mod ws;
 
-use crate::config::{ConnectionsFile, UsersFile};
+use crate::config::{ConnectionsFile, GlobalParamsFile, UsersFile};
 use crate::engine::ConnectionPool;
 use crate::orchestrator::JobHandle;
 use crate::runs::RunStore;
@@ -24,4 +24,7 @@ pub struct AppState {
     /// Acceso de lectura al histórico de runs. None si la conexión `runs`
     /// no está declarada en connections.json.
     pub run_store: Arc<RwLock<Option<Arc<RunStore>>>>,
+    /// Parámetros y respuestas globales (compartidos entre proyectos).
+    pub global_params: Arc<RwLock<GlobalParamsFile>>,
+    pub global_params_path: String,
 }

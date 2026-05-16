@@ -50,7 +50,7 @@ pub async fn run_project(
     headers: HeaderMap,
     body: Option<Json<RunPublicReq>>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let (cfg, config_name) = load_exposed_config(&state, &slug)?;
+    let (mut cfg, config_name) = load_exposed_config(&state, &slug)?;
     enforce_token(&cfg.api, &headers)?;
 
     let req = body.map(|Json(b)| b).unwrap_or_default();
@@ -59,6 +59,21 @@ pub async fn run_project(
     } else {
         HashMap::new()
     };
+
+    // Mergear parámetros globales sobre los locales (local pisa).
+    {
+        let globals = state.global_params.read().await.clone();
+        let local_names: std::collections::HashSet<String> = cfg
+            .parameters
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        for g in &globals.parameters {
+            if !local_names.contains(&g.name) {
+                cfg.parameters.push(g.clone());
+            }
+        }
+    }
 
     // Validar que cualquier :param referenciado tenga valor (mismo check
     // que /api/jobs).
@@ -127,6 +142,7 @@ pub async fn run_project(
         stop_on_failure: true,
         use_preload: false,
         params: parameters,
+        run_name: None,
     };
     let handle = crate::orchestrator::run_job(
         job_id.clone(),

@@ -10,6 +10,7 @@ pub mod sort;
 pub mod sql_exec;
 pub mod sql_query;
 pub mod transform;
+pub mod union;
 
 use crate::config::{Step, StepSpec};
 use crate::orchestrator::progress::ProgressReporter;
@@ -93,6 +94,13 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
         StepSpec::Export { input, target } => {
             let rows = export::run(ctx, input, target).await?;
             StepOutcome::exported(rows)
+        }
+        StepSpec::Union {
+            inputs,
+            output_table,
+        } => {
+            let df = union::run(ctx, inputs).await?;
+            StepOutcome::table(output_table.clone(), df)
         }
         StepSpec::Procedural {
             input,

@@ -49,6 +49,8 @@ pub struct JobOptions {
     pub use_preload: bool,
     /// Valores resueltos de parámetros para esta ejecución (`:nombre` → valor).
     pub params: std::collections::HashMap<String, crate::config::ParamValue>,
+    /// Etiqueta opcional para identificar esta corrida.
+    pub run_name: Option<String>,
 }
 
 pub async fn run_job(
@@ -132,6 +134,7 @@ pub async fn run_job(
         job_id: job_id.clone(),
         config_name: config_name.clone(),
         config_display_name: Some(cfg.name.clone()),
+        run_name: options.run_name.clone(),
         user: user.clone(),
         debug,
         started_at: now,
@@ -166,6 +169,7 @@ pub async fn run_job(
                 debug,
                 now,
                 cfg.steps.len(),
+                options.run_name.as_deref(),
             )
             .await
         {

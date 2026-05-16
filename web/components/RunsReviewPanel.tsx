@@ -594,9 +594,27 @@ function RunsTable(p: RunsTableProps) {
                 className="px-3 py-1.5 cursor-pointer"
                 title={String(r[ci("config_name")])}
               >
-                {String(
-                  r[ci("config_display_name")] ?? r[ci("config_name")],
-                )}
+                {(() => {
+                  const idxRn = ci("run_name");
+                  const runName =
+                    idxRn >= 0
+                      ? (r[idxRn] as string | null)
+                      : null;
+                  const project = String(
+                    r[ci("config_display_name")] ?? r[ci("config_name")],
+                  );
+                  if (runName && runName.trim()) {
+                    return (
+                      <div>
+                        <div>{runName}</div>
+                        <div className="text-[10px] text-dim">
+                          {project}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return project;
+                })()}
               </td>
               <td onClick={() => onSelect(jobId)} className="px-3 py-1.5 cursor-pointer font-mono">
                 {String(r[ci("user_name")] ?? "—")}

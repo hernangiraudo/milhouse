@@ -22,17 +22,24 @@ import { useDialog } from "./Dialog";
 export function ParameterPromptDialog({
   parameters,
   presets,
+  defaultRunName,
   onCancel,
   onResolved,
 }: {
   parameters: ParamSpec[];
   presets: ParamPreset[];
+  /** Sugerencia para el nombre de la ejecución (ej. "Demo · 2026-05-16"). */
+  defaultRunName?: string;
   onCancel: () => void;
-  onResolved: (values: Record<string, ParamValueJson>) => void;
+  onResolved: (args: {
+    values: Record<string, ParamValueJson>;
+    runName: string | null;
+  }) => void;
 }) {
   const dialog = useDialog();
   const [selectedPresets, setSelectedPresets] = useState<string[]>([]);
   const [overrides, setOverrides] = useState<Record<string, ParamValueJson>>({});
+  const [runName, setRunName] = useState<string>(defaultRunName ?? "");
 
   // Merge presets en orden de selección.
   const fromPresets = useMemo<Record<string, ParamValueJson>>(() => {
@@ -90,6 +97,22 @@ export function ParameterPromptDialog({
           manualmente. Si elegís varias, los valores se combinan en orden y
           el último gana en caso de superposición.
         </p>
+
+        <label className="block mb-3">
+          <span className="text-[11px] uppercase tracking-wider text-dim block mb-1">
+            Nombre de la ejecución (opcional)
+          </span>
+          <input
+            value={runName}
+            onChange={(e) => setRunName(e.target.value)}
+            placeholder="ej. cierre marzo, YTD con clientes A…"
+            className="w-full milhouse-field"
+          />
+          <p className="text-[11px] text-dim mt-1">
+            Te ayuda a identificar este run en la lista de ejecuciones cuando
+            corrés el mismo proyecto con distintos parámetros.
+          </p>
+        </label>
 
         {presets.length > 0 && (
           <div className="bg-surface-2 border border-surface rounded p-2 mb-3">
@@ -194,7 +217,12 @@ export function ParameterPromptDialog({
             Cancelar
           </button>
           <button
-            onClick={() => onResolved(effective)}
+            onClick={() =>
+              onResolved({
+                values: effective,
+                runName: runName.trim() || null,
+              })
+            }
             disabled={missing.length > 0}
             className="text-sm font-semibold px-3 py-1.5 rounded disabled:opacity-50"
             style={{ background: "var(--accent)", color: "var(--accent-ink)" }}

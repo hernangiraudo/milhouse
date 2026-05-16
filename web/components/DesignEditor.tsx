@@ -7,6 +7,7 @@ import {
   cancelJob,
   createConfig,
   createJob,
+  datasetPreview,
   deletePreload,
   exportRunBundleUrl,
   getConfig,
@@ -15,6 +16,7 @@ import {
   slugifyFilename,
   updateConfig,
   WS_BASE,
+  type DatasetPreview,
 } from "@/lib/api";
 import { StepEditor, type Step } from "./StepEditor";
 import { MilhouseAIDialog } from "./MilhouseAIDialog";
@@ -96,6 +98,10 @@ export function DesignEditor({
   // Último job_id ejecutado para este proyecto (se mantiene aún después de
   // que el job termina, para que re-ejecutar un paso reuse el mismo run).
   const [lastJobId, setLastJobId] = useState<string | null>(null);
+  // step_id → step_uid del último run (para abrir preview de tablas).
+  const [lastRunStepUids, setLastRunStepUids] = useState<Record<string, number>>(
+    {},
+  );
   // Pasos del subset actual; cuando es null, la corrida es completa.
   // Mientras hay una corrida parcial activa, el reconciler sólo aplica
   // estados a estos pasos (para no sobrescribir los badges de los demás
@@ -105,13 +111,51 @@ export function DesignEditor({
   // Diálogo de respuesta a parámetros antes de ejecutar.
   const [paramPrompt, setParamPrompt] = useState<{
     params: ParamSpec[];
-    onResolved: (vals: Record<string, ParamValueJson>) => Promise<void> | void;
+    defaultRunName: string;
+    onResolved: (args: {
+      values: Record<string, ParamValueJson>;
+      runName: string | null;
+    }) => Promise<void> | void;
   } | null>(null);
   const [stepLogs, setStepLogs] = useState<Record<string, LogLine[]>>({});
   const [stepSamples, setStepSamples] = useState<Record<string, TableSample>>(
     {},
   );
   const [execTab, setExecTab] = useState<"logs" | "sample">("logs");
+  // "Propiedades del proyecto": grupos / parámetros / API. Colapsable.
+  const [propsOpen, setPropsOpen] = useState(false);
+  // Vista del lienzo: "nodes" (solo pasos) | "nodes_and_tables" (pasos +
+  // ícono de tabla a la salida de cada uno).
+  const [canvasView, setCanvasView] = useState<"nodes" | "nodes_and_tables">(
+    "nodes",
+  );
+  // Tabla abierta desde el ícono de salida del nodo (modal con preview).
+  const [openedTable, setOpenedTable] = useState<{
+    stepId: string;
+    stepUid: number;
+    name: string;
+  } | null>(null);
+  const [openedTablePreview, setOpenedTablePreview] = useState<
+    DatasetPreview | null
+  >(null);
+  const [openedTableErr, setOpenedTableErr] = useState<string | null>(null);
+  // Globales: parámetros + respuestas compartidas entre proyectos. Se
+  // cargan al montar y se usan para mergear con los locales en runtime.
+  const [globalParams, setGlobalParams] = useState<{
+    parameters: ParamSpec[];
+    presets: ParamPreset[];
+  }>({ parameters: [], presets: [] });
+  useEffect(() => {
+    fetch(`${API_BASE}/api/parameters`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { parameters: [], presets: [] }))
+      .then((j) =>
+        setGlobalParams({
+          parameters: j.parameters ?? [],
+          presets: j.presets ?? [],
+        }),
+      )
+      .catch(() => {});
+  }, []);
   const [preloadInfo, setPreloadInfo] = useState<{
     has_preload: boolean;
     preloaded_step_ids: string[];
@@ -228,6 +272,42 @@ export function DesignEditor({
       ws.close();
     };
   }, [activeJobId]);
+
+  // Carga step_id → step_uid del último run para que el canvas pueda
+  // abrir preview de las tablas al click.
+  useEffect(() => {
+    if (!lastJobId) {
+      setLastRunStepUids({});
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/runs/${lastJobId}/steps`, {
+          cache: "no-store",
+        });
+        if (!r.ok) return;
+        const j = (await r.json()) as {
+          columns: string[];
+          rows: unknown[][];
+        };
+        const ciId = j.columns.indexOf("step_id");
+        const ciUid = j.columns.indexOf("step_uid");
+        const map: Record<string, number> = {};
+        for (const row of j.rows) {
+          const id = row[ciId] as string;
+          const uid = Number(row[ciUid]);
+          if (id && Number.isFinite(uid)) map[id] = uid;
+        }
+        if (alive) setLastRunStepUids(map);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [lastJobId, activeJobId]);
 
   useEffect(() => {
     if (currentName == null) {
@@ -361,6 +441,7 @@ export function DesignEditor({
         input: "",
         target: { kind: "file", format: "csv", path: `data/exports/${id}.csv` },
       },
+      union: { inputs: [], output_table: id },
     };
     const newStep: Step = {
       id,
@@ -615,11 +696,18 @@ export function DesignEditor({
       return;
     }
 
-    // ¿El proyecto declara parámetros usados por los steps a ejecutar?
-    const declaredParams = cfg.parameters ?? [];
+    // ¿El proyecto declara (o hereda de globales) parámetros usados por
+    // los steps a ejecutar? Mergeamos local + global (local pisa por
+    // nombre — mismo criterio que el backend).
+    const localParams = cfg.parameters ?? [];
+    const localNames = new Set(localParams.map((p) => p.name));
+    const mergedParams: ParamSpec[] = [
+      ...localParams,
+      ...globalParams.parameters.filter((g) => !localNames.has(g.name)),
+    ];
     const usedParamNames = new Set<string>();
-    if (declaredParams.length > 0) {
-      const declaredSet = new Set(declaredParams.map((p) => p.name));
+    if (mergedParams.length > 0) {
+      const declaredSet = new Set(mergedParams.map((p) => p.name));
       for (const s of cfg.steps) {
         if (!stepsToRunSet.has(s.id)) continue;
         const texts: string[] = [];
@@ -639,7 +727,10 @@ export function DesignEditor({
       }
     }
 
-    const launch = async (resolvedParams: Record<string, ParamValueJson>) => {
+    const launch = async (
+      resolvedParams: Record<string, ParamValueJson>,
+      runName: string | null,
+    ) => {
       const reuseJobId = !isFullRun ? lastJobId : null;
       setActiveSubset(target ? new Set(target) : null);
       if (isFullRun) {
@@ -673,6 +764,7 @@ export function DesignEditor({
           use_preload: preloadInfo.has_preload,
           existing_job_id: reuseJobId,
           parameters: resolvedParams,
+          run_name: runName,
         });
         setActiveJobId(job_id);
         setLastJobId(job_id);
@@ -683,14 +775,24 @@ export function DesignEditor({
       }
     };
 
+    // Sugerencia automática para el nombre: "<config display> · <fecha>"
+    const today = new Date().toISOString().slice(0, 10);
+    const suggestedRunName = `${cfg.name} · ${today}`;
+
     if (usedParamNames.size === 0) {
-      await launch({});
+      // Sin parámetros declarados → no abrimos el prompt, lanzamos con
+      // el nombre sugerido (el usuario lo puede editar dentro del Diseño
+      // si quiere; o lo cambia en Revisión).
+      await launch({}, suggestedRunName);
       return;
     }
-    // Abrir prompt de parámetros. Filtro la lista a los que usan los steps
-    // a ejecutar — más limpio.
-    const needed = declaredParams.filter((p) => usedParamNames.has(p.name));
-    setParamPrompt({ params: needed, onResolved: launch });
+    // Abrir prompt de parámetros + nombre de ejecución.
+    const needed = mergedParams.filter((p) => usedParamNames.has(p.name));
+    setParamPrompt({
+      params: needed,
+      defaultRunName: suggestedRunName,
+      onResolved: ({ values, runName }) => launch(values, runName),
+    });
   }
 
   async function onExportBundle() {
@@ -730,6 +832,36 @@ export function DesignEditor({
       await dialog.alert(`No se pudo importar el bundle: ${e}`, {
         variant: "danger",
       });
+    }
+  }
+
+  async function onOpenTable(stepId: string) {
+    if (!lastJobId) {
+      await dialog.alert(
+        "Ejecutá el proyecto al menos una vez para ver datos.",
+        { variant: "info" },
+      );
+      return;
+    }
+    const uid = lastRunStepUids[stepId];
+    if (uid == null) {
+      await dialog.alert(
+        `No hay dataset persistido para el paso "${stepId}" en el último run. Probá ejecutar con debug habilitado.`,
+        { variant: "info" },
+      );
+      return;
+    }
+    const step = (cfg?.steps ?? []).find((s) => s.id === stepId);
+    const name =
+      (step as { output_table?: string } | undefined)?.output_table ?? stepId;
+    setOpenedTable({ stepId, stepUid: uid, name });
+    setOpenedTablePreview(null);
+    setOpenedTableErr(null);
+    try {
+      const prev = await datasetPreview(lastJobId, uid, 500);
+      setOpenedTablePreview(prev);
+    } catch (e) {
+      setOpenedTableErr(String(e));
     }
   }
 
@@ -829,116 +961,7 @@ export function DesignEditor({
         </div>
       </header>
 
-      <div className="grid grid-cols-[2fr_1fr] gap-3 bg-panel rounded-xl p-4 border border-surface">
-        <Field label="Nombre legible del proyecto">
-          <input
-            value={cfg.name}
-            onChange={(e) => updateProject("name", e.target.value)}
-            className="w-full milhouse-field"
-          />
-        </Field>
-        <Field label="Versión">
-          <input
-            type="number"
-            value={cfg.version ?? 1}
-            onChange={(e) =>
-              updateProject("version", Number(e.target.value) || 1)
-            }
-            className="w-full milhouse-field"
-          />
-        </Field>
-      </div>
-
-      {/* Parámetros + respuestas guardadas */}
-      <ParametersPanel
-        parameters={cfg.parameters ?? []}
-        presets={cfg.presets ?? []}
-        onChange={(next) =>
-          applyChange({
-            ...cfg,
-            parameters: next.parameters,
-            presets: next.presets,
-          })
-        }
-      />
-
-      {/* Exposición como API REST */}
-      <ApiExposurePanel
-        projectFilename={currentName}
-        api={cfg.api ?? {}}
-        steps={cfg.steps}
-        onChange={(next) => applyChange({ ...cfg, api: next })}
-      />
-
-      {/* Grupos */}
-      <div className="bg-panel border border-surface rounded-xl p-3">
-        <div className="flex items-center justify-between mb-2">
-          <h4 className="text-xs uppercase tracking-wider text-muted">
-            Grupos · {(cfg.groups ?? []).length}
-          </h4>
-          <button
-            onClick={addGroup}
-            className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2"
-          >
-            + Nuevo grupo
-          </button>
-        </div>
-        {(cfg.groups ?? []).length === 0 ? (
-          <div className="text-xs text-dim">
-            Tip: seleccioná varios pasos en el lienzo (Ctrl/Shift+click o drag
-            en background) y click derecho → "Crear grupo".
-          </div>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {(cfg.groups ?? []).map((g) => (
-              <div
-                key={g.name}
-                className="flex items-center gap-2 px-2 py-1 rounded border border-surface-strong bg-surface text-sm"
-              >
-                <code className="font-mono">{g.name}</code>
-                <select
-                  value={g.parent_group ?? ""}
-                  onChange={(e) => setGroupParent(g.name, e.target.value || null)}
-                  className="milhouse-field text-[10px] py-0 px-1"
-                  title="Grupo padre (anidamiento)"
-                >
-                  <option value="">(sin padre)</option>
-                  {(cfg.groups ?? [])
-                    .filter((x) => x.name !== g.name)
-                    .map((x) => (
-                      <option key={x.name} value={x.name}>
-                        ↰ {x.name}
-                      </option>
-                    ))}
-                </select>
-                <button
-                  onClick={() => renameGroup(g.name)}
-                  className="text-dim text-xs"
-                  title="Renombrar"
-                >
-                  ✎
-                </button>
-                <button
-                  onClick={() => ungroupAll(g.name)}
-                  className="text-dim text-xs"
-                  title="Quitar grupo a sus pasos (sin eliminarlos)"
-                >
-                  ⏏
-                </button>
-                <button
-                  onClick={() => deleteGroup(g.name)}
-                  className="text-red-400 text-xs"
-                  title="Eliminar grupo"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Canvas */}
+      {/* Canvas (lienzo arriba de todo) */}
       <div className="bg-panel border border-surface rounded-xl p-3">
         <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
           <h4 className="text-xs uppercase tracking-wider text-muted">
@@ -1077,6 +1100,10 @@ export function DesignEditor({
           onDeleteGroup={(name) => deleteGroup(name)}
           stepStates={stepStates}
           onRun={runJobWithMode}
+          viewMode={canvasView}
+          onChangeViewMode={setCanvasView}
+          tablesAvailable={lastRunStepUids}
+          onOpenTable={onOpenTable}
           onCancelJob={
             activeJobId
               ? async () => {
@@ -1162,17 +1189,215 @@ export function DesignEditor({
         </div>
       )}
 
+      {/* Propiedades del proyecto (colapsable) */}
+      <div className="bg-panel border border-surface rounded-xl">
+        <button
+          onClick={() => setPropsOpen(!propsOpen)}
+          className="w-full flex items-center justify-between px-4 py-3 text-left"
+        >
+          <div>
+            <h3 className="font-semibold">Propiedades del proyecto</h3>
+            <p className="text-xs text-muted">
+              Nombre, versión, grupos, parámetros locales, respuestas
+              guardadas y exposición vía API.
+            </p>
+          </div>
+          <span className="text-dim">{propsOpen ? "▾" : "▸"}</span>
+        </button>
+        {propsOpen && (
+          <div className="border-t border-surface p-3 space-y-3">
+            <div className="grid grid-cols-[2fr_1fr] gap-3">
+              <Field label="Nombre legible del proyecto">
+                <input
+                  value={cfg.name}
+                  onChange={(e) => updateProject("name", e.target.value)}
+                  className="w-full milhouse-field"
+                />
+              </Field>
+              <Field label="Versión">
+                <input
+                  type="number"
+                  value={cfg.version ?? 1}
+                  onChange={(e) =>
+                    updateProject("version", Number(e.target.value) || 1)
+                  }
+                  className="w-full milhouse-field"
+                />
+              </Field>
+            </div>
+
+            {/* Grupos */}
+            <div className="bg-panel border border-surface rounded-xl p-3">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-xs uppercase tracking-wider text-muted">
+                  Grupos · {(cfg.groups ?? []).length}
+                </h4>
+                <button
+                  onClick={addGroup}
+                  className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2"
+                >
+                  + Nuevo grupo
+                </button>
+              </div>
+              {(cfg.groups ?? []).length === 0 ? (
+                <div className="text-xs text-dim">
+                  Tip: seleccioná varios pasos en el lienzo (Ctrl/Shift+click
+                  o drag en background) y click derecho → "Crear grupo".
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {(cfg.groups ?? []).map((g) => (
+                    <div
+                      key={g.name}
+                      className="flex items-center gap-2 px-2 py-1 rounded border border-surface-strong bg-surface text-sm"
+                    >
+                      <code className="font-mono">{g.name}</code>
+                      <select
+                        value={g.parent_group ?? ""}
+                        onChange={(e) =>
+                          setGroupParent(g.name, e.target.value || null)
+                        }
+                        className="milhouse-field text-[10px] py-0 px-1"
+                        title="Grupo padre (anidamiento)"
+                      >
+                        <option value="">(sin padre)</option>
+                        {(cfg.groups ?? [])
+                          .filter((x) => x.name !== g.name)
+                          .map((x) => (
+                            <option key={x.name} value={x.name}>
+                              ↰ {x.name}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        onClick={() => renameGroup(g.name)}
+                        className="text-dim text-xs"
+                        title="Renombrar"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        onClick={() => ungroupAll(g.name)}
+                        className="text-dim text-xs"
+                        title="Quitar grupo a sus pasos (sin eliminarlos)"
+                      >
+                        ⏏
+                      </button>
+                      <button
+                        onClick={() => deleteGroup(g.name)}
+                        className="text-red-400 text-xs"
+                        title="Eliminar grupo"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Parámetros locales del proyecto + respuestas */}
+            <div>
+              <p className="text-[11px] text-dim mb-2">
+                Estos parámetros son <strong>locales</strong> al proyecto.
+                Para parámetros y respuestas globales (compartidos entre
+                proyectos) usá la sección "Parámetros de Ejecución". En
+                caso de colisión por nombre, el local pisa al global.
+              </p>
+              <ParametersPanel
+                parameters={cfg.parameters ?? []}
+                presets={cfg.presets ?? []}
+                onChange={(next) =>
+                  applyChange({
+                    ...cfg,
+                    parameters: next.parameters,
+                    presets: next.presets,
+                  })
+                }
+              />
+            </div>
+
+            {/* Exposición como API REST */}
+            <ApiExposurePanel
+              projectFilename={currentName}
+              api={cfg.api ?? {}}
+              steps={cfg.steps}
+              onChange={(next) => applyChange({ ...cfg, api: next })}
+            />
+          </div>
+        )}
+      </div>
+
       {paramPrompt && (
         <ParameterPromptDialog
           parameters={paramPrompt.params}
-          presets={cfg.presets ?? []}
+          presets={mergedPresetsForPrompt(cfg.presets ?? [], globalParams.presets)}
+          defaultRunName={paramPrompt.defaultRunName}
           onCancel={() => setParamPrompt(null)}
-          onResolved={async (vals) => {
+          onResolved={async (args) => {
             const cb = paramPrompt.onResolved;
             setParamPrompt(null);
-            await cb(vals);
+            await cb(args);
           }}
         />
+      )}
+
+      {openedTable && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-6"
+          style={{
+            background: "rgba(0,0,0,0.45)",
+            backdropFilter: "blur(2px)",
+          }}
+          onClick={() => setOpenedTable(null)}
+        >
+          <div
+            className="bg-surface border border-surface-strong rounded-xl p-5 w-full max-w-5xl max-h-[90vh] overflow-auto"
+            style={{ boxShadow: "var(--shadow)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-lg font-bold">
+                  Datos de <code className="font-mono">{openedTable.name}</code>
+                </h3>
+                <p className="text-xs text-muted">
+                  Paso <code className="font-mono">{openedTable.stepId}</code> ·
+                  último run <code className="font-mono">
+                    {lastJobId?.slice(0, 8)}
+                  </code>
+                </p>
+              </div>
+              <button
+                onClick={() => setOpenedTable(null)}
+                className="text-dim hover:text-app text-xl"
+              >
+                ✕
+              </button>
+            </div>
+            {openedTableErr && (
+              <div className="text-red-400 text-sm whitespace-pre-wrap">
+                {openedTableErr}
+              </div>
+            )}
+            {!openedTableErr && !openedTablePreview && (
+              <div className="text-dim text-sm">cargando…</div>
+            )}
+            {openedTablePreview && (
+              <SamplePanel
+                sample={{
+                  columns: openedTablePreview.columns.map((n) => ({
+                    name: n,
+                    dtype: "",
+                  })),
+                  rows: openedTablePreview.rows,
+                  total_rows: openedTablePreview.row_count,
+                  sampled_rows: openedTablePreview.rows.length,
+                }}
+              />
+            )}
+          </div>
+        </div>
       )}
 
       {showAI && (
@@ -1296,6 +1521,27 @@ function scanParamRefs(text: string): string[] {
     i++;
   }
   return out;
+}
+
+/** Mergea presets local + global anteponiendo "(global)" a los heredados.
+ *  Si un preset existe con el mismo nombre en ambos, gana el local. */
+function mergedPresetsForPrompt(
+  locals: ParamPreset[],
+  globals: ParamPreset[],
+): ParamPreset[] {
+  const localNames = new Set(locals.map((p) => p.name));
+  const tagged: ParamPreset[] = [
+    ...locals,
+    ...globals
+      .filter((g) => !localNames.has(g.name))
+      .map((g) => ({
+        ...g,
+        description: g.description
+          ? `(global) ${g.description}`
+          : "(global)",
+      })),
+  ];
+  return tagged;
 }
 
 function ancestorsInclusive(steps: Step[], target: string): Set<string> {
