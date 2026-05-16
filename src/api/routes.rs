@@ -944,11 +944,51 @@ pub async fn test_connection_endpoint(
     // Si vino spec en el body, usamos esa (probar antes de guardar).
     // Si no, buscamos por nombre en el AppState.
     let conn: crate::config::Connection = match req.spec {
-        Some(spec) => parse_connection_payload(
-            req.name.as_deref().unwrap_or(&name),
-            req.description,
-            &spec,
-        )?,
+        Some(mut spec) => {
+            // Si el spec NO trae `password` (o viene null) y estamos
+            // editando una conexión que ya existe, reusamos la password
+            // guardada — misma convención que `update_connection`. Sin
+            // esto, "Test" en el editor falla apenas el usuario no toca
+            // el campo password.
+            let needs_pwd_recovery = match &spec {
+                serde_json::Value::Object(m) => match m.get("password") {
+                    None => true,
+                    Some(serde_json::Value::Null) => true,
+                    Some(serde_json::Value::String(s)) if s.is_empty() => true,
+                    _ => false,
+                },
+                _ => false,
+            };
+            if needs_pwd_recovery {
+                let existing = state.connections.read().await.clone();
+                let lookup_name = req.name.as_deref().unwrap_or(&name);
+                if let Some(prev) =
+                    existing.connections.iter().find(|c| c.name == lookup_name)
+                {
+                    let prev_pwd = match &prev.kind {
+                        crate::config::ConnectionKind::Postgres { password, .. }
+                        | crate::config::ConnectionKind::SqlServer { password, .. }
+                        | crate::config::ConnectionKind::Mysql { password, .. } => {
+                            password.clone()
+                        }
+                        _ => None,
+                    };
+                    if let (Some(pwd), serde_json::Value::Object(m)) =
+                        (prev_pwd, &mut spec)
+                    {
+                        m.insert(
+                            "password".into(),
+                            serde_json::Value::String(pwd),
+                        );
+                    }
+                }
+            }
+            parse_connection_payload(
+                req.name.as_deref().unwrap_or(&name),
+                req.description,
+                &spec,
+            )?
+        }
         None => {
             let file = state.connections.read().await.clone();
             file.connections

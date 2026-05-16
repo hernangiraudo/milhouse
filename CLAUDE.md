@@ -383,7 +383,13 @@ job_eta, job_finished
   eliminar todo.
 - **Parámetros** locales + globales: `:nombre` con sustitución automática.
   En "Propiedades del proyecto" hay un sub-bloque para parámetros locales
-  y una nota explicando el merge con globales.
+  y una nota explicando el merge con globales. El `ParametersPanel` está
+  **separado en 2 tabs** (Parámetros · Respuestas guardadas). En la tab
+  de Respuestas, cada preset muestra checkbox por parámetro del proyecto
+  — sólo los tildados van al `values` del preset (omitir = se completa
+  con otro preset o lo pide al usuario al ejecutar). Contador
+  `X / N parámetros` visible. Backend ya lo soportaba (`HashMap`); UI lo
+  hace evidente.
 - **API REST por proyecto**: toggle `api.exposed`, token opcional, lista
   de datasets a exportar.
 - Lienzo con badges de estado por paso (idle/ready/running pulsante/
@@ -401,7 +407,19 @@ job_eta, job_finished
 ### Editor SQL
 - Modo visual (selects/where/order) **+ modo manual** que conserva el
   texto pegado. Toggle "🪄 Visual / ✎ SQL manual" + detecta paste y
-  cambia solo.
+  cambia solo. **Elegir una tabla en el combobox fuerza modo visual**:
+  el SELECT se reconstruye desde los controles con todas las columnas.
+- **Combobox de tabla con búsqueda incremental** (`TableCombobox.tsx`):
+  el usuario tipea y filtra por substring case-insensitive sobre
+  `schema.name`. Ranking: match exacto > prefijo de qualified > prefijo
+  de name > substring. Navegación ↑↓, Enter para elegir, Esc cierra.
+  Si el texto no matchea, Enter persiste el string libre (útil para
+  vistas dinámicas o tablas con permisos restringidos).
+- **Default de conexión en pasos SQL nuevos**: al agregar un
+  `sql_query` o `sql_exec`, prefijamos `connection` con la última usada
+  (persistida en `localStorage` con clave `milhouse.lastUsedConnection`).
+  `DesignEditor.updateStep` la actualiza cada vez que el usuario asigna
+  una conexión a un paso SQL.
 - **Indentar**: tokenizer real (preserva strings/comentarios), rompe en
   cláusulas, columnas, AND/OR de top-level; BETWEEN no rompe en su AND.
 - **Chequear sintaxis**: prepare en DuckDB; `SET NOEXEC ON/OFF` en
@@ -431,10 +449,17 @@ job_eta, job_finished
 - Planificación: at|window|cron (worker tokio cada 60s).
 - Conexiones: CRUD con test, default, propaga cambios al pool sin
   reiniciar (`pool.replace_file()` invalida cache si cambia la spec).
-  Editar conserva password si el body no la trae explícita.
+  Editar conserva password si el body no la trae explícita. **Test de
+  conexión también reusa la password guardada** cuando el body manda
+  spec sin password (o `null`/`""`): el endpoint la rellena desde el
+  snapshot. Antes el botón Test fallaba cuando se editaba sin retipear.
 - Monitor SQL: lista de procesos en una conexión SQL Server con badge
   `M` para sesiones de Milhouse (detectado por `application_name`),
-  ver SQL completo, matar con `KILL`.
+  ver SQL completo, matar con `KILL`. **Filtros**: pills
+  Todas/Solo Milhouse/Otras + caja de búsqueda free-text (busca en
+  login/host/programa/db/status/cmd/SQL/SID). **Ordenamiento**:
+  headers clickeables con ▲/▼ (default `elapsed_minutes` desc — más
+  viejas arriba); CPU/min/SID arrancan en desc, texto en asc.
 - Roadmap: pedidos de mejora con severidad / status / comentarios.
 - Usuarios: CRUD simple.
 
@@ -447,7 +472,10 @@ job_eta, job_finished
   ofrece Start (si el binario existe) o Setup + Start (compila + deps)
   vía route handlers Next.js (`/api/local/*`).
 - Theme switcher (claro/oscuro), botón Cancelar con clase
-  `.milhouse-btn-secondary` (contraste correcto en ambos temas).
+  `.milhouse-btn-secondary` (contraste correcto en ambos temas). En
+  tema claro usa **slate-300** sobre paneles blancos con borde
+  slate-500 y texto slate-950 — slate-200 quedaba indistinguible
+  del panel.
 - **`SamplePanel`** (tabla de resultados): clase utilitaria
   `.milhouse-data-table` con header sticky, banding alterno usando
   tokens `--panel` / `--panel-2`, hover con accent sutil. Números
@@ -638,23 +666,36 @@ Variables de entorno opcionales:
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
-- **Paso `union`**: apila N datasets, completa columnas faltantes con
-  null, promueve a String si hay conflicto de dtype. Editor visual con
-  reordenamiento y autocompletado de `depends_on`.
-- **Vista dual del lienzo** (toggle `▢` / `▦`): "solo nodos" o
-  "nodos + tablas". En la 2ª, cada paso muestra a su derecha una mini
-  card con el `output_table` que produce, clickeable si hay datos del
-  último run (abre modal con `SamplePanel`).
-- **`SamplePanel`** rediseñado: clase `.milhouse-data-table` con
-  banding temático, header sticky, hover; números siempre con miles
-  + 2 decimales (decimales) o sin (enteros), formato es-AR.
-- **Duplicar conexión**: `POST /api/connections/:name/duplicate` copia
-  la spec entera (incluida password) desde el snapshot in-memory.
-- **Nombre de ejecución**: `runs.run_name`, input en el prompt de
-  parámetros con sugerencia auto, mostrado destacado en la lista de
-  Revisión cuando hay nombre custom.
-- **Parámetros globales** + merge en runtime + "Propiedades del
-  proyecto" colapsable en el editor (compactó la vista).
+- **Tabs Parámetros / Respuestas guardadas** en `ParametersPanel` con
+  presets parciales: checkbox por parámetro para incluir/excluir,
+  contador `X / N`, helper visual (cyan vs surface). Al crear un preset
+  desde la tab de Parámetros, el panel salta a Respuestas y lo deja
+  expandido.
+- **Autocomplete de tabla** (`step_editors/TableCombobox.tsx`): el
+  usuario tipea, filtra por substring case-insensitive con ranking,
+  navegación con flechas, resaltado del match. Reemplaza el `<select>`
+  del `SqlQueryVisual`. Si tipea libre `schema.name` y no matchea, el
+  efecto de columnas splittea manualmente.
+- **Elegir tabla fuerza modo visual**: el callback del combobox llama a
+  `setMode("visual")` cuando hay valor, así el SELECT se reconstruye
+  con todas las columnas. Pisa SQL manual previo a propósito (es lo
+  esperado al elegir tabla).
+- **Default conn = última usada** en pasos SQL nuevos. Helpers
+  `readLastUsedConnection` / `writeLastUsedConnection` en
+  `DesignEditor.tsx`, clave `milhouse.lastUsedConnection`.
+- **Test de conexión reusa password guardada**: parche en
+  `test_connection_endpoint` (`src/api/routes.rs`): si el body trae
+  spec sin password (o `null`/`""`) y la conexión ya existe,
+  completamos con la del snapshot. Antes el botón Test fallaba en
+  modo edit cuando el usuario no retipeaba la password.
+- **Contraste del botón Cancelar en tema claro**: `.milhouse-btn-secondary`
+  pasa a slate-300 sobre paneles blancos con borde slate-500 y texto
+  slate-950 (slate-200 quedaba indistinguible).
+- **Monitor SQL con filtros y orden**: caja de búsqueda free-text
+  (login/programa/SQL/etc), headers clickeables con ▲/▼, default
+  `elapsed_minutes` desc. Contador `N/total` cuando filtra.
+- **`.gitignore`**: agregado `/data/preloaded/*` con `.gitkeep` para
+  no trackear los zips importados.
 
 Pendientes mencionados pero NO implementados (preguntá antes de empezarlos):
 - **Sección Debug**: navegador read-only sobre runs históricas con

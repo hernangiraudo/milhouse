@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import type { ConnectionsResponse } from "@/lib/types";
 import { SqlEditor } from "../SqlEditor";
+import { TableCombobox } from "./TableCombobox";
 
 interface SqlQueryStep {
   id: string;
@@ -95,8 +96,19 @@ export function SqlQueryVisual({
     setColumns([]);
     setSelectedCols(new Set());
     if (!conn || !table) return;
-    const t = tables.find((x) => qualifiedTable(x) === table) ?? tables.find((x) => x.name === table);
-    listTableColumns(conn, t?.name ?? table, t?.schema ?? null)
+    const t =
+      tables.find((x) => qualifiedTable(x) === table) ??
+      tables.find((x) => x.name === table);
+    // Si el usuario tipeó un texto libre tipo "schema.nombre" y no está en
+    // el listado, lo splitteamos para preservar el schema.
+    let tname = t?.name ?? table;
+    let tschema: string | null = t?.schema ?? null;
+    if (!t && table.includes(".")) {
+      const idx = table.indexOf(".");
+      tschema = table.slice(0, idx);
+      tname = table.slice(idx + 1);
+    }
+    listTableColumns(conn, tname, tschema)
       .then((cs) => {
         setColumns(cs);
         setSelectedCols(new Set(cs.map((c) => c.name))); // por default todas
@@ -232,23 +244,32 @@ export function SqlQueryVisual({
           )}
         </Field>
         <Field label="Tabla">
-          <select
+          <TableCombobox
+            tables={tables}
             value={table}
-            onChange={(e) => setTable(e.target.value)}
-            className="w-full milhouse-field"
-            disabled={!conn || tables.length === 0}
-          >
-            <option value="">{conn ? "(elegí una)" : "(elegí conexión primero)"}</option>
-            {tables.map((t) => {
-              const qt = qualifiedTable(t);
-              return (
-                <option key={qt} value={qt}>
-                  {qt}
-                  {t.kind === "view" ? " · view" : ""}
-                </option>
-              );
-            })}
-          </select>
+            onChange={(next) => {
+              setTable(next);
+              // Elegir tabla = "armé esto desde los controles". Forzamos
+              // modo visual para que el SELECT se reconstruya con la
+              // tabla + columnas (todas por default). Si el usuario
+              // pegó SQL manual antes, queda reemplazado: es lo que
+              // pide haber elegido una tabla.
+              if (next) setMode("visual");
+            }}
+            disabled={!conn}
+            placeholder={
+              !conn
+                ? "(elegí conexión primero)"
+                : tables.length === 0
+                  ? "(cargando tablas…)"
+                  : "tipeá para buscar tabla"
+            }
+          />
+          {conn && tables.length > 0 && (
+            <p className="text-[11px] text-dim mt-1">
+              {tables.length.toLocaleString("es-AR")} tabla(s) disponibles · tipeá parte del nombre para filtrar
+            </p>
+          )}
         </Field>
       </div>
 
