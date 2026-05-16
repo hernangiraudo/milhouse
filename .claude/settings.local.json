@@ -56,7 +56,8 @@
       "Bash(unzip -p /tmp/bundle.zip manifest.json)",
       "PowerShell(netstat *)",
       "PowerShell(Get-CimInstance *)",
-      "PowerShell(Stop-Process *)"
+      "PowerShell(Stop-Process *)",
+      "Bash(node *)"
     ]
   }
 }

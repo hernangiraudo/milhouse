@@ -111,6 +111,14 @@ async fn sql_server_query(
     use futures::TryStreamExt;
     use tiberius::ColumnData;
 
+    // Anexa el SQL al mensaje de error para que el usuario pueda ver qué
+    // consulta exacta falló (clave cuando viene de controles visuales).
+    let with_sql_ctx = |e: String| -> String {
+        let preview: String = sql.chars().take(800).collect();
+        let dots = if sql.len() > 800 { " …(truncado)" } else { "" };
+        format!("{e}\n--- SQL enviado al servidor ---\n{preview}{dots}")
+    };
+
     let mut col_names: Vec<String> = Vec::new();
     let mut cols: Vec<Vec<ColumnData<'static>>> = Vec::new();
     {
@@ -118,7 +126,7 @@ async fn sql_server_query(
         let mut stream = guard
             .simple_query(sql.clone())
             .await
-            .map_err(|e| anyhow!("SQL Server query: {e}"))?;
+            .map_err(|e| anyhow!("{}", with_sql_ctx(format!("SQL Server query: {e}"))))?;
 
         let mut col_initialized = false;
         while let Some(item) = stream

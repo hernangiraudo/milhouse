@@ -1,10 +1,88 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTheme } from "@/lib/useTheme";
 import { prettyFormatSql } from "@/lib/sqlFormat";
 import { API_BASE } from "@/lib/api";
+
+/** Chequeo rápido del lado cliente: paréntesis y comillas balanceadas.
+ *  Ignora caracteres dentro de strings y comentarios. Devuelve la primera
+ *  diferencia detectada o null si está OK. */
+function quickSqlSanity(sql: string): string | null {
+  let i = 0;
+  let parens = 0;
+  let inS = false; // single quote string
+  let inD = false; // double quote ident
+  let inLine = false;
+  let inBlock = false;
+  while (i < sql.length) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+    if (inLine) {
+      if (ch === "\n") inLine = false;
+      i++;
+      continue;
+    }
+    if (inBlock) {
+      if (ch === "*" && next === "/") {
+        inBlock = false;
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (inS) {
+      if (ch === "'") {
+        if (next === "'") {
+          i += 2;
+          continue;
+        }
+        inS = false;
+      }
+      i++;
+      continue;
+    }
+    if (inD) {
+      if (ch === '"') inD = false;
+      i++;
+      continue;
+    }
+    if (ch === "-" && next === "-") {
+      inLine = true;
+      i += 2;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      inBlock = true;
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      inS = true;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inD = true;
+      i++;
+      continue;
+    }
+    if (ch === "(") parens++;
+    else if (ch === ")") {
+      parens--;
+      if (parens < 0) return "Paréntesis ')' sin abrir";
+    }
+    i++;
+  }
+  if (inS) return "Comilla simple sin cerrar";
+  if (inD) return "Comilla doble sin cerrar";
+  if (inBlock) return "Comentario /* sin cerrar */";
+  if (parens > 0) return `Faltan ${parens} ')' de cierre`;
+  if (parens < 0) return `Sobran ${-parens} ')'`;
+  return null;
+}
 
 // Monaco es pesado: lo cargamos solo en el client.
 const Editor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
@@ -58,6 +136,11 @@ export function SqlEditor({
   const [reviewing, setReviewing] = useState(false);
   const [review, setReview] = useState<AiReview | null>(null);
   const [reviewErr, setReviewErr] = useState<string | null>(null);
+  // Sanity check rápido (paréntesis, comillas). Solo informativo.
+  const sanityWarn = useMemo(
+    () => (value.trim() ? quickSqlSanity(value) : null),
+    [value],
+  );
 
   function onFormat() {
     if (readOnly) return;
@@ -169,6 +252,14 @@ export function SqlEditor({
               title={check.error}
             >
               ✗ {check.error}
+            </span>
+          )}
+          {sanityWarn && check.kind !== "error" && (
+            <span
+              className="text-[11px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-700"
+              title="Chequeo local: balanceo de paréntesis y comillas"
+            >
+              ⚠ {sanityWarn}
             </span>
           )}
         </div>

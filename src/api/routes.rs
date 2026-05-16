@@ -705,10 +705,48 @@ pub async fn check_sql_endpoint(
                 })),
             }
         }
+        crate::engine::OpenedConnection::SqlServer(client) => {
+            let client = client.clone();
+            // SET NOEXEC ON hace que el server compile/parse/bind pero no
+            // ejecute. Cualquier error de sintaxis o nombre inválido se
+            // reporta como si fuera una ejecución normal. Después apagamos
+            // NOEXEC para no dejar la sesión inhabilitada.
+            let wrapped = format!(
+                "SET NOEXEC ON;\n{};\nSET NOEXEC OFF;",
+                sql_trimmed.trim_end_matches(';')
+            );
+            let check_future = async move {
+                use futures::TryStreamExt;
+                let mut guard = client.lock().await;
+                let mut stream = match guard.simple_query(wrapped).await {
+                    Ok(s) => s,
+                    Err(e) => return Err::<(), String>(format!("{e}")),
+                };
+                // Drenar el stream para capturar errores que tiberius reporta
+                // como items, no como Err inmediato del Future.
+                loop {
+                    match stream.try_next().await {
+                        Ok(Some(_)) => continue,
+                        Ok(None) => return Ok(()),
+                        Err(e) => return Err(format!("{e}")),
+                    }
+                }
+            };
+            let res = tokio::time::timeout(std::time::Duration::from_secs(8), check_future).await;
+            match res {
+                Ok(Ok(())) => Json(json!({ "ok": true, "supported": true })),
+                Ok(Err(e)) => Json(json!({ "ok": false, "error": e, "supported": true })),
+                Err(_) => Json(json!({
+                    "ok": true,
+                    "supported": false,
+                    "note": "timeout: SQL Server no respondió en 8s",
+                })),
+            }
+        }
         _ => Json(json!({
             "ok": true,
             "supported": false,
-            "note": "el chequeo de sintaxis solo está disponible para conexiones DuckDB",
+            "note": "el chequeo de sintaxis solo está disponible para DuckDB y SQL Server",
         })),
     }
 }
