@@ -211,9 +211,12 @@ export function SqlQueryVisual({
                 connection: e.target.value || null,
               })
             }
-            className="w-full milhouse-field"
+            className={`w-full milhouse-field ${
+              !conn ? "border-red-500" : ""
+            }`}
+            style={!conn ? { borderColor: "#ef4444" } : undefined}
           >
-            <option value="">(default)</option>
+            <option value="">⚠ elegir conexión</option>
             {connections?.connections
               .filter((c) => c.implemented)
               .map((c) => (
@@ -222,6 +225,11 @@ export function SqlQueryVisual({
                 </option>
               ))}
           </select>
+          {!conn && (
+            <p className="text-[11px] text-red-400 mt-1">
+              Este paso no se va a poder ejecutar hasta que asignes una conexión.
+            </p>
+          )}
         </Field>
         <Field label="Tabla">
           <select

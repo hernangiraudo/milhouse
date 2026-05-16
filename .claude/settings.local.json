@@ -57,7 +57,8 @@
       "PowerShell(netstat *)",
       "PowerShell(Get-CimInstance *)",
       "PowerShell(Stop-Process *)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(cargo test *)"
     ]
   }
 }

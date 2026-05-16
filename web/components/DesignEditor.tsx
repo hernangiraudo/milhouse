@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   API_BASE,
+  cancelJob,
   createConfig,
   createJob,
   deletePreload,
@@ -23,6 +24,30 @@ import { useUser } from "@/lib/session";
 import { LogsPanel } from "./LogsPanel";
 import { SamplePanel } from "./SamplePanel";
 import type { LogLine, TableSample } from "@/lib/types";
+import { ParametersPanel } from "./ParametersPanel";
+import { ParameterPromptDialog } from "./ParameterPromptDialog";
+
+export type ParamKind =
+  | "date"
+  | "number"
+  | "text"
+  | "list_number"
+  | "list_text";
+
+export interface ParamSpec {
+  name: string;
+  kind: ParamKind;
+  label?: string | null;
+  description?: string | null;
+}
+
+export type ParamValueJson = string | string[];
+
+export interface ParamPreset {
+  name: string;
+  description?: string | null;
+  values: Record<string, ParamValueJson>;
+}
 
 type ProjectShape = {
   name: string;
@@ -34,6 +59,8 @@ type ProjectShape = {
     parent_group?: string | null;
   }>;
   steps: Step[];
+  parameters?: ParamSpec[];
+  presets?: ParamPreset[];
   duckdb_path?: string | null;
   [k: string]: unknown;
 };
@@ -66,6 +93,11 @@ export function DesignEditor({
   // con "skipped").
   const [activeSubset, setActiveSubset] = useState<Set<string> | null>(null);
   const [stepStates, setStepStates] = useState<Record<string, NodeStatus>>({});
+  // Diálogo de respuesta a parámetros antes de ejecutar.
+  const [paramPrompt, setParamPrompt] = useState<{
+    params: ParamSpec[];
+    onResolved: (vals: Record<string, ParamValueJson>) => Promise<void> | void;
+  } | null>(null);
   const [stepLogs, setStepLogs] = useState<Record<string, LogLine[]>>({});
   const [stepSamples, setStepSamples] = useState<Record<string, TableSample>>(
     {},
@@ -552,50 +584,104 @@ export function DesignEditor({
       target = null; // ejecutar todo
     }
     const isFullRun = target === null;
-    // Reusar job_id si es subset (re-ejecución parcial). En "Ejecutar todo"
-    // empezamos un run nuevo (limpio).
-    const reuseJobId = !isFullRun ? lastJobId : null;
-    setActiveSubset(target ? new Set(target) : null);
-    if (isFullRun) {
-      setStepStates({});
-      setStepLogs({});
-      setStepSamples({});
-    } else if (target) {
-      // Solo limpiar el estado de los pasos que se van a re-ejecutar; el
-      // resto mantiene su badge previo.
-      const toClear = new Set(target);
-      setStepStates((p) => {
-        const out = { ...p };
-        for (const id of toClear) delete out[id];
-        return out;
-      });
-      setStepLogs((p) => {
-        const out = { ...p };
-        for (const id of toClear) delete out[id];
-        return out;
-      });
-      setStepSamples((p) => {
-        const out = { ...p };
-        for (const id of toClear) delete out[id];
-        return out;
-      });
+    // Pre-check: pasos SQL sin conexión definida.
+    const stepsToRun = isFullRun
+      ? cfg.steps.map((s) => s.id)
+      : (target as string[]);
+    const stepsToRunSet = new Set(stepsToRun);
+    const missingConn: string[] = [];
+    for (const s of cfg.steps) {
+      if (!stepsToRunSet.has(s.id)) continue;
+      if (s.kind !== "sql_query" && s.kind !== "sql_exec") continue;
+      const c = (s as { connection?: string | null }).connection;
+      if (!c || (typeof c === "string" && c.trim() === "")) {
+        missingConn.push(s.id);
+      }
     }
-    try {
-      const { job_id } = await createJob(savedName, {
-        user,
-        debug: true,
-        target_steps: target,
-        stop_on_failure: true,
-        use_preload: preloadInfo.has_preload,
-        existing_job_id: reuseJobId,
-      });
-      setActiveJobId(job_id);
-      setLastJobId(job_id);
-    } catch (e) {
-      await dialog.alert(`Error al lanzar ejecución: ${e}`, {
-        variant: "danger",
-      });
+    if (missingConn.length > 0) {
+      await dialog.alert(
+        `Los siguientes pasos SQL no tienen conexión asignada y no se pueden ejecutar:\n\n  • ${missingConn.join("\n  • ")}\n\nAbrí cada paso y elegí una conexión antes de ejecutar.`,
+        { title: "Falta conexión en pasos SQL", variant: "danger" },
+      );
+      return;
     }
+
+    // ¿El proyecto declara parámetros usados por los steps a ejecutar?
+    const declaredParams = cfg.parameters ?? [];
+    const usedParamNames = new Set<string>();
+    if (declaredParams.length > 0) {
+      const declaredSet = new Set(declaredParams.map((p) => p.name));
+      for (const s of cfg.steps) {
+        if (!stepsToRunSet.has(s.id)) continue;
+        const texts: string[] = [];
+        if (s.kind === "sql_query" || s.kind === "sql_exec") {
+          const q = (s as { query?: string }).query;
+          if (q) texts.push(q);
+        }
+        if (s.kind === "filter_and_subset") {
+          const f = (s as { filter?: string | null }).filter;
+          if (f) texts.push(f);
+        }
+        for (const t of texts) {
+          for (const name of scanParamRefs(t)) {
+            if (declaredSet.has(name)) usedParamNames.add(name);
+          }
+        }
+      }
+    }
+
+    const launch = async (resolvedParams: Record<string, ParamValueJson>) => {
+      const reuseJobId = !isFullRun ? lastJobId : null;
+      setActiveSubset(target ? new Set(target) : null);
+      if (isFullRun) {
+        setStepStates({});
+        setStepLogs({});
+        setStepSamples({});
+      } else if (target) {
+        const toClear = new Set(target);
+        setStepStates((p) => {
+          const out = { ...p };
+          for (const id of toClear) delete out[id];
+          return out;
+        });
+        setStepLogs((p) => {
+          const out = { ...p };
+          for (const id of toClear) delete out[id];
+          return out;
+        });
+        setStepSamples((p) => {
+          const out = { ...p };
+          for (const id of toClear) delete out[id];
+          return out;
+        });
+      }
+      try {
+        const { job_id } = await createJob(savedName as string, {
+          user,
+          debug: true,
+          target_steps: target,
+          stop_on_failure: true,
+          use_preload: preloadInfo.has_preload,
+          existing_job_id: reuseJobId,
+          parameters: resolvedParams,
+        });
+        setActiveJobId(job_id);
+        setLastJobId(job_id);
+      } catch (e) {
+        await dialog.alert(`Error al lanzar ejecución: ${e}`, {
+          variant: "danger",
+        });
+      }
+    };
+
+    if (usedParamNames.size === 0) {
+      await launch({});
+      return;
+    }
+    // Abrir prompt de parámetros. Filtro la lista a los que usan los steps
+    // a ejecutar — más limpio.
+    const needed = declaredParams.filter((p) => usedParamNames.has(p.name));
+    setParamPrompt({ params: needed, onResolved: launch });
   }
 
   async function onExportBundle() {
@@ -754,6 +840,19 @@ export function DesignEditor({
         </Field>
       </div>
 
+      {/* Parámetros + respuestas guardadas */}
+      <ParametersPanel
+        parameters={cfg.parameters ?? []}
+        presets={cfg.presets ?? []}
+        onChange={(next) =>
+          applyChange({
+            ...cfg,
+            parameters: next.parameters,
+            presets: next.presets,
+          })
+        }
+      />
+
       {/* Grupos */}
       <div className="bg-panel border border-surface rounded-xl p-3">
         <div className="flex items-center justify-between mb-2">
@@ -857,9 +956,27 @@ export function DesignEditor({
               {activeJobId ? "Ejecutando…" : "▶ Ejecutar todo"}
             </button>
             {activeJobId && (
-              <span className="text-[11px] text-emerald-400">
-                job activo: {activeJobId.slice(0, 8)}
-              </span>
+              <>
+                <button
+                  onClick={async () => {
+                    if (!activeJobId) return;
+                    try {
+                      await cancelJob(activeJobId);
+                    } catch (e) {
+                      await dialog.alert(`No se pudo cancelar: ${e}`, {
+                        variant: "danger",
+                      });
+                    }
+                  }}
+                  className="text-xs px-2 py-1 rounded border border-red-700 bg-red-500/20 text-red-300"
+                  title="Cancela el job: el paso en ejecución recibe la señal de interrupción y los pendientes quedan como Cancelled"
+                >
+                  ⏹ Cancelar
+                </button>
+                <span className="text-[11px] text-emerald-400">
+                  job activo: {activeJobId.slice(0, 8)}
+                </span>
+              </>
             )}
             <span className="text-[11px] text-dim">
               · Tip: click derecho sobre un paso para opciones parciales
@@ -943,6 +1060,19 @@ export function DesignEditor({
           onDeleteGroup={(name) => deleteGroup(name)}
           stepStates={stepStates}
           onRun={runJobWithMode}
+          onCancelJob={
+            activeJobId
+              ? async () => {
+                  try {
+                    await cancelJob(activeJobId);
+                  } catch (e) {
+                    await dialog.alert(`No se pudo cancelar: ${e}`, {
+                      variant: "danger",
+                    });
+                  }
+                }
+              : undefined
+          }
         />
       </div>
 
@@ -1015,6 +1145,19 @@ export function DesignEditor({
         </div>
       )}
 
+      {paramPrompt && (
+        <ParameterPromptDialog
+          parameters={paramPrompt.params}
+          presets={cfg.presets ?? []}
+          onCancel={() => setParamPrompt(null)}
+          onResolved={async (vals) => {
+            const cb = paramPrompt.onResolved;
+            setParamPrompt(null);
+            await cb(vals);
+          }}
+        />
+      )}
+
       {showAI && (
         <MilhouseAIDialog
           existingStepIds={stepIds}
@@ -1056,6 +1199,86 @@ function Field({
       {children}
     </label>
   );
+}
+
+/** Devuelve los nombres referenciados como `:nombre` en un texto. Ignora
+ *  `::` (casts) y referencias dentro de strings/comentarios. Igual semántica
+ *  que la del backend. */
+function scanParamRefs(text: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  const n = text.length;
+  let inSingle = false,
+    inDouble = false,
+    inLine = false,
+    inBlock = false;
+  while (i < n) {
+    const c = text[i];
+    const nx = text[i + 1] ?? "";
+    if (inLine) {
+      if (c === "\n") inLine = false;
+      i++;
+      continue;
+    }
+    if (inBlock) {
+      if (c === "*" && nx === "/") {
+        inBlock = false;
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (inSingle) {
+      if (c === "'") {
+        if (nx === "'") {
+          i += 2;
+          continue;
+        }
+        inSingle = false;
+      }
+      i++;
+      continue;
+    }
+    if (inDouble) {
+      if (c === '"') inDouble = false;
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      inSingle = true;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inDouble = true;
+      i++;
+      continue;
+    }
+    if (c === "-" && nx === "-") {
+      inLine = true;
+      i += 2;
+      continue;
+    }
+    if (c === "/" && nx === "*") {
+      inBlock = true;
+      i += 2;
+      continue;
+    }
+    if (c === ":" && /[A-Za-z_]/.test(nx)) {
+      if (i > 0 && text[i - 1] === ":") {
+        i++;
+        continue;
+      }
+      let end = i + 1;
+      while (end < n && /[A-Za-z0-9_]/.test(text[end])) end++;
+      out.push(text.slice(i + 1, end));
+      i = end;
+      continue;
+    }
+    i++;
+  }
+  return out;
 }
 
 function ancestorsInclusive(steps: Step[], target: string): Set<string> {

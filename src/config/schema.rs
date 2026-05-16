@@ -16,7 +16,96 @@ pub struct EtlConfig {
     /// sección permite agregar `description` o `color` por grupo.
     #[serde(default)]
     pub groups: Vec<GroupMeta>,
+    /// Parámetros del proyecto. Se usan como `:nombre` en SQL/expresiones y
+    /// se resuelven al ejecutar (UI prompt + presets guardados).
+    #[serde(default)]
+    pub parameters: Vec<ParamSpec>,
+    /// Respuestas pre-guardadas a uno o varios parámetros. Una preset puede
+    /// resolver más de un parámetro a la vez (ej. "Year to Date" setea
+    /// FechaDesde y FechaHasta).
+    #[serde(default)]
+    pub presets: Vec<ParamPreset>,
     pub steps: Vec<Step>,
+}
+
+/// Tipo de parámetro. Determina cómo se renderiza en la UI y cómo se
+/// sustituye en los textos.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamKind {
+    /// Fecha simple. UI: date picker. Sustitución: 'YYYY-MM-DD' con quotes.
+    Date,
+    /// Número. UI: input number. Sustitución: literal sin quotes.
+    Number,
+    /// Texto libre. UI: input. Sustitución: 'valor escapado'.
+    Text,
+    /// Lista de números. UI: textarea + carga desde Excel. Sustitución:
+    /// dentro de `IN (...)` se expande a `IN (1, 2, 3)`; fuera es coma-separada.
+    ListNumber,
+    /// Lista de strings.
+    ListText,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParamSpec {
+    pub name: String,
+    pub kind: ParamKind,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Valor resuelto de un parámetro. Lo que se sustituye en el SQL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ParamValue {
+    Single(String),
+    List(Vec<String>),
+}
+
+impl ParamValue {
+    /// Renderiza el valor para sustitución en SQL. `quote` indica si los
+    /// strings se rodean con comillas simples (true para Date/Text, false
+    /// para Number).
+    pub fn render_sql(&self, quote: bool, in_list_context: bool) -> String {
+        match self {
+            ParamValue::Single(v) => {
+                if quote {
+                    format!("'{}'", v.replace('\'', "''"))
+                } else {
+                    v.clone()
+                }
+            }
+            ParamValue::List(items) => {
+                let rendered: Vec<String> = items
+                    .iter()
+                    .map(|v| {
+                        if quote {
+                            format!("'{}'", v.replace('\'', "''"))
+                        } else {
+                            v.clone()
+                        }
+                    })
+                    .collect();
+                if in_list_context {
+                    // Lo de adentro de un IN(...) — sin paréntesis extras.
+                    rendered.join(", ")
+                } else {
+                    rendered.join(", ")
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParamPreset {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Valores resueltos por nombre de parámetro.
+    pub values: HashMap<String, ParamValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

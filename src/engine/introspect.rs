@@ -28,7 +28,7 @@ pub async fn list_tables(pool: &ConnectionPool, conn_name: &str) -> Result<Vec<T
     let opened = pool.get_any(Some(conn_name)).await?;
     match &*opened {
         OpenedConnection::Duckdb(c) => duckdb_tables(c.clone()).await,
-        OpenedConnection::SqlServer(c) => mssql_tables(c.clone()).await,
+        OpenedConnection::SqlServer(p) => mssql_tables(p.clone()).await,
         OpenedConnection::Mysql(p) => mysql_tables(p.clone()).await,
         OpenedConnection::Odbc(c) => odbc_tables(c.clone()).await,
     }
@@ -45,7 +45,7 @@ pub async fn list_columns(
     let table = table.to_string();
     match &*opened {
         OpenedConnection::Duckdb(c) => duckdb_columns(c.clone(), table).await,
-        OpenedConnection::SqlServer(c) => mssql_columns(c.clone(), schema, table).await,
+        OpenedConnection::SqlServer(p) => mssql_columns(p.clone(), schema, table).await,
         OpenedConnection::Mysql(p) => mysql_columns(p.clone(), table).await,
         OpenedConnection::Odbc(c) => odbc_columns(c.clone(), schema, table).await,
     }
@@ -192,12 +192,13 @@ async fn duckdb_columns(
 // SQL Server
 // -----------------------------------------------------------------------
 async fn mssql_tables(
-    client: Arc<tokio::sync::Mutex<super::context::SqlServerClient>>,
+    pool: Arc<super::context::SqlServerPool>,
 ) -> Result<Vec<TableInfo>> {
     use futures::TryStreamExt;
     use tiberius::QueryItem;
-    let mut guard = client.lock().await;
-    let mut stream = guard
+    let mut lease = pool.acquire().await?;
+    let client = lease.client_mut();
+    let mut stream = client
         .simple_query(
             "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
              FROM INFORMATION_SCHEMA.TABLES
@@ -225,13 +226,14 @@ async fn mssql_tables(
 }
 
 async fn mssql_columns(
-    client: Arc<tokio::sync::Mutex<super::context::SqlServerClient>>,
+    pool: Arc<super::context::SqlServerPool>,
     schema: Option<String>,
     table: String,
 ) -> Result<Vec<ColumnInfo>> {
     use futures::TryStreamExt;
     use tiberius::QueryItem;
-    let mut guard = client.lock().await;
+    let mut lease = pool.acquire().await?;
+    let guard = lease.client_mut();
     let sql = match schema.as_deref() {
         Some(s) => format!(
             "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE

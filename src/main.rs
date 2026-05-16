@@ -100,6 +100,10 @@ async fn main() -> anyhow::Result<()> {
             get(routes::list_columns_endpoint),
         )
         .route("/api/sql/check", post(routes::check_sql_endpoint))
+        .route(
+            "/api/parameters/parse-excel",
+            post(routes::parse_excel_for_param),
+        )
         .route("/api/ai/available", get(routes::ai_available))
         .route("/api/ai/build-step", post(routes::ai_build_step))
         .route("/api/ai/review-sql", post(routes::ai_review_sql))
@@ -154,6 +158,12 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/roadmap/:id/comments",
             get(routes::list_roadmap_comments).post(routes::add_roadmap_comment),
+        )
+        // SQL Monitor
+        .route("/api/sql-monitor/:connection", get(routes::sql_monitor_list))
+        .route(
+            "/api/sql-monitor/:connection/kill/:session_id",
+            post(routes::sql_monitor_kill),
         )
         // Casos
         .route(

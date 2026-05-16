@@ -16,12 +16,22 @@ pub async fn run(
     let conn = ctx.connections.get_duckdb(connection).await?;
     let q = query.to_string();
     let reporter = reporter.clone();
+    let cancel = ctx.cancel.clone();
 
-    tokio::task::spawn_blocking(move || -> Result<usize> {
+    // Watcher: si llega cancel, interrumpe la conexión DuckDB para que la
+    // sentencia en curso falle con "interrupted".
+    let interrupt_handle = {
+        let guard = conn.lock().await;
+        guard.interrupt_handle()
+    };
+    let watcher_cancel = cancel.clone();
+    let watcher = tokio::spawn(async move {
+        watcher_cancel.cancelled().await;
+        interrupt_handle.interrupt();
+    });
+
+    let mut work = tokio::task::spawn_blocking(move || -> Result<usize> {
         let guard = conn.blocking_lock();
-        // Dividimos por `;` para poder reportar progreso y rows_affected por
-        // sentencia. DuckDB también acepta múltiples sentencias en un solo
-        // execute_batch, pero ahí perderíamos granularidad.
         let stmts: Vec<&str> = q
             .split(';')
             .map(str::trim)
@@ -30,19 +40,44 @@ pub async fn run(
         let total = stmts.len().max(1);
         let mut total_affected: usize = 0;
         for (i, stmt) in stmts.iter().enumerate() {
-            let preview = preview(stmt);
-            reporter.log(format!("[{}/{}] {}", i + 1, total, preview));
+            let preview_short = preview(stmt);
+            // Log "enviado": numera la sentencia, muestra el SQL completo
+            // (truncado a 4000 chars). El timestamp lo agrega el supervisor.
+            reporter.log(format!(
+                "→ [{}/{}] enviando SQL\n{}",
+                i + 1,
+                total,
+                truncate_for_log(stmt, 4000)
+            ));
             let n = guard
                 .execute(stmt, [])
-                .with_context(|| format!("executing statement #{}: {preview}", i + 1))?;
+                .with_context(|| format!("executing statement #{}: {preview_short}", i + 1))?;
             total_affected = total_affected.saturating_add(n);
-            // progreso simple por sentencias completadas
             let pct = (i + 1) as f32 / total as f32;
             reporter.report_progress(pct, Some(i + 1), Some(total));
         }
         Ok(total_affected)
-    })
-    .await?
+    });
+    let res = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            work.abort();
+            let _ = (&mut work).await;
+            Err(anyhow::anyhow!("SQL exec cancelado por el usuario"))
+        }
+        r = &mut work => r.map_err(|e| anyhow::anyhow!("SQL exec join: {e}"))?,
+    };
+    watcher.abort();
+    res
+}
+
+fn truncate_for_log(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}\n…(truncado a {max} caracteres)")
+    }
 }
 
 fn preview(s: &str) -> String {

@@ -10,6 +10,7 @@ import { SchedulesPanel } from "@/components/SchedulesPanel";
 import { DesignPanel } from "@/components/DesignPanel";
 import { ExecParamsPanel } from "@/components/ExecParamsPanel";
 import { RoadmapPanel } from "@/components/RoadmapPanel";
+import { SqlMonitorPanel } from "@/components/SqlMonitorPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UserChip } from "@/components/LoginGate";
 
@@ -22,7 +23,8 @@ type Section =
   | "cases"
   | "connections"
   | "users"
-  | "roadmap";
+  | "roadmap"
+  | "sql_monitor";
 
 const SECTIONS: Array<{ id: Section; label: string; icon: string }> = [
   { id: "design", label: "Diseño", icon: "✏️" },
@@ -32,6 +34,7 @@ const SECTIONS: Array<{ id: Section; label: string; icon: string }> = [
   { id: "review", label: "Revisión de logs", icon: "📜" },
   { id: "cases", label: "Casos", icon: "🗂" },
   { id: "connections", label: "Conexiones", icon: "🔌" },
+  { id: "sql_monitor", label: "Monitor SQL", icon: "📊" },
   { id: "users", label: "Usuarios", icon: "👤" },
   { id: "roadmap", label: "Roadmap", icon: "🗺️" },
 ];
@@ -94,6 +97,7 @@ export default function Home() {
           {section === "connections" && <ConnectionsPanel />}
           {section === "users" && <UsersPanel />}
           {section === "roadmap" && <RoadmapPanel />}
+          {section === "sql_monitor" && <SqlMonitorPanel />}
         </div>
       </main>
     </div>

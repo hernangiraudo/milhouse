@@ -4,6 +4,7 @@ pub mod filter_subset;
 pub mod introspect;
 pub mod join;
 pub mod lookup;
+pub mod params;
 pub mod procedural;
 pub mod sort;
 pub mod sql_exec;
@@ -26,11 +27,13 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             connection,
             output_table,
         } => {
-            let df = sql_query::run(ctx, query, connection.as_deref()).await?;
+            let q = params::substitute(query, &ctx.params)?;
+            let df = sql_query::run(ctx, &q, connection.as_deref(), reporter.clone()).await?;
             StepOutcome::table(output_table.clone(), df)
         }
         StepSpec::SqlExec { query, connection } => {
-            let rows = sql_exec::run(ctx, query, connection.as_deref(), reporter.clone()).await?;
+            let q = params::substitute(query, &ctx.params)?;
+            let rows = sql_exec::run(ctx, &q, connection.as_deref(), reporter.clone()).await?;
             StepOutcome::exec_done(rows)
         }
         StepSpec::Join {
@@ -71,7 +74,11 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             select,
             output_table,
         } => {
-            let df = filter_subset::run(ctx, input, filter.as_deref(), select).await?;
+            let substituted = match filter {
+                Some(f) => Some(params::substitute(f, &ctx.params)?),
+                None => None,
+            };
+            let df = filter_subset::run(ctx, input, substituted.as_deref(), select).await?;
             let name = output_table.clone().unwrap_or_else(|| input.clone());
             StepOutcome::table(name, df)
         }

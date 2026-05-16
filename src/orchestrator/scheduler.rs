@@ -47,6 +47,8 @@ pub struct JobOptions {
     /// output_table quedan precargadas se marcan automáticamente como
     /// Skipped.
     pub use_preload: bool,
+    /// Valores resueltos de parámetros para esta ejecución (`:nombre` → valor).
+    pub params: std::collections::HashMap<String, crate::config::ParamValue>,
 }
 
 pub async fn run_job(
@@ -223,6 +225,13 @@ async fn supervisor_and_scheduler(
     let step_by_id: HashMap<String, Step> =
         cfg.steps.iter().map(|s| (s.id.clone(), s.clone())).collect();
 
+    // Construir ResolvedParams una vez por job: specs del config + valores
+    // del request. Compartido entre todos los StepContext via Arc.
+    let resolved_params = Arc::new(crate::engine::params::ResolvedParams::new(
+        &cfg.parameters,
+        options.params.clone(),
+    ));
+
     let (tx, mut rx) = mpsc::channel::<StepUpdateMsg>(1024);
 
     // ready queue
@@ -359,6 +368,7 @@ async fn supervisor_and_scheduler(
                 tables: tables.clone(),
                 connections: connections.clone(),
                 cancel: cancel.clone(),
+                params: resolved_params.clone(),
             };
             running_count += 1;
             step_started_at.insert(sid.clone(), Instant::now());

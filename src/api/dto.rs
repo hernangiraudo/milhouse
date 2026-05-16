@@ -42,6 +42,11 @@ pub struct RunJobReq {
     /// el id histórico y sólo se sobreescriben los pasos del subset.
     #[serde(default)]
     pub existing_job_id: Option<String>,
+    /// Valores resueltos de parámetros para esta ejecución. Clave = nombre
+    /// del parámetro declarado en el config, valor = string (escalar) o
+    /// lista de strings.
+    #[serde(default)]
+    pub parameters: std::collections::HashMap<String, crate::config::ParamValue>,
 }
 
 #[derive(Debug, Serialize)]
