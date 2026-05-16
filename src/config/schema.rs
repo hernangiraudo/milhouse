@@ -28,7 +28,22 @@ pub struct EtlConfig {
     /// Configuración para exponer el proyecto como API REST pública.
     #[serde(default)]
     pub api: ApiConfig,
+    /// Parámetros generales de ejecución del proyecto.
+    #[serde(default)]
+    pub settings: ProjectSettings,
     pub steps: Vec<Step>,
+}
+
+/// Parámetros generales que afectan cómo corre el scheduler para este
+/// proyecto. Pensado para crecer (timeouts, retries, etc).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProjectSettings {
+    /// Cantidad máxima de pasos que pueden correr en paralelo dentro de
+    /// un job de este proyecto. `None` → sin límite (lanza todos los
+    /// ready). Útil cuando el SQL Server pega contra throughput o cuando
+    /// el operador quiere bajar la carga.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel_steps: Option<usize>,
 }
 
 /// Configuración para exponer el proyecto vía `/api/public/projects/:slug`.

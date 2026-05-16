@@ -1178,6 +1178,36 @@ pub async fn cancel_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Drena el job: deja terminar los Running pero marca todos los
+/// Pending/Ready como Cancelled.
+pub async fn drain_job(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let handle = state
+        .jobs
+        .get(&id)
+        .ok_or((StatusCode::NOT_FOUND, "job not found".to_string()))?;
+    handle.request_drain().await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Cancela un step individual. Solo aplica si el step está en Pending o
+/// Ready; si está corriendo lo respeta (matar la query desde el motor
+/// es una mejora pendiente). Marca descendientes como Skipped con razón
+/// "dependencia cancelada".
+pub async fn cancel_step(
+    State(state): State<AppState>,
+    Path((id, step_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let handle = state
+        .jobs
+        .get(&id)
+        .ok_or((StatusCode::NOT_FOUND, "job not found".to_string()))?;
+    handle.request_cancel_step(step_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------------------------------------------------------------
 // Revisión de runs (histórico desde la DB de runs)
 // ---------------------------------------------------------------------

@@ -150,6 +150,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/jobs", get(routes::list_jobs).post(routes::create_job))
         .route("/api/jobs/:id", get(routes::get_job))
         .route("/api/jobs/:id/cancel", post(routes::cancel_job))
+        .route("/api/jobs/:id/drain", post(routes::drain_job))
+        .route(
+            "/api/jobs/:id/cancel-step/:step_id",
+            post(routes::cancel_step),
+        )
         .route("/api/jobs/:id/ws", get(ws::ws_handler))
         // Histórico desde la DB de runs
         .route("/api/runs", get(routes::list_run_history))

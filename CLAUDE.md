@@ -298,6 +298,10 @@ POST   /api/jobs                                   {config_name, user, debug,
 GET    /api/jobs                                   in-memory recientes
 GET    /api/jobs/:id
 POST   /api/jobs/:id/cancel
+POST   /api/jobs/:id/drain                         cancela Pending/Ready,
+                                                    deja terminar Running
+POST   /api/jobs/:id/cancel-step/:step_id          cancela uno; Running con
+                                                    sql_session dispara KILL
 GET    /api/jobs/:id/ws                            WebSocket eventos vivos
 
 GET    /api/connections                            con `default` y `is_default`
@@ -354,7 +358,7 @@ GET    /api/public/jobs/:id                         {status, progress, result?}
 
 ```
 job_started, step_state_changed, step_progress, step_log, step_completed,
-job_eta, job_finished
+step_sql_session, job_eta, job_finished
 ```
 
 ## Features implementadas (al día de la sesión)
@@ -398,10 +402,28 @@ job_eta, job_finished
 - Ejecución parcial: "Ejecutar este paso / hasta acá / desde acá / todo
   el grupo / todo el proyecto". Re-ejecutar parcial reusa el mismo
   `job_id` (corrida histórica), conserva badges previos.
+- **"Ejecutar desde Datos Importados"** (cuando hay bundle): corre todo
+  excepto los pasos preloadeados. Las tablas importadas alimentan los
+  downstream sin reejecutar sus fuentes.
 - Panel "Ejecución" debajo del lienzo con tabs Logs / Datos de salida
   para el paso seleccionado.
+- **Cola de ejecución en vivo** (`RunQueuePanel`): visible mientras hay
+  job activo. Buckets Ejecutando / Esperando / Terminadas / Fallidas /
+  Canceladas / Salteadas. Cada paso muestra `SPID NN` en cyan cuando
+  está corriendo contra SQL Server. Botones globales: **⏸ Drenar**
+  (cancela pendientes, deja terminar Running), **⏹ Cancelar todo**.
+  Botón ✕ por paso para cancelar uno (en Running con SPID, manda KILL).
+- **Parámetros de ejecución del proyecto** (sub-bloque en Propiedades):
+  `settings.max_parallel_steps` — input numérico. Vacío = sin límite;
+  `1` = serial. El scheduler respeta este cap al spawnear; los ready
+  que no caben quedan en cola con estado Ready.
 - Cancelar job activo (botón ⏹ y opción en menú del nodo). DuckDB
-  usa `interrupt_handle()`; SQL Server/MySQL/ODBC liberan el cliente.
+  usa `interrupt_handle()`; SQL Server con `sql_session` capturado
+  manda `KILL <SPID>` via lease paralelo del pool; MySQL/ODBC liberan
+  el cliente (cancel suave).
+- **Nodos importados de bundle**: badge "📦 IMPORTADO" con borde cyan
+  punteado en el lienzo. Al importar, se lanza un job parcial que sólo
+  "ejecuta" los preloadeados (refresca state visual + persiste datasets).
 - Export/import zip de datasets de una corrida (offline dev).
 
 ### Editor SQL
@@ -429,6 +451,13 @@ job_eta, job_finished
   comillas desbalanceadas (sin llamar al backend).
 - **✨ Revisar con Milhouse-AI**: review del SQL con sugerencias
   estructuradas (severity, title, detail, suggested_sql).
+- **Fechas tipadas**: tiberius extrae `Date/DateTime/DateTime2/SmallDateTime/
+  DateTimeOffset` via `FromSql` chrono → polars `Date`/`Datetime(µs)`.
+  Por **default todas las columnas Datetime se truncan a `Date`**
+  (normalize_temporal_columns). `sql_query.keep_time_columns: Vec<String>`
+  permite preservar HH:MM:SS por nombre (match case-insensitive). En el
+  editor visual aparece una sección "Columnas con hora" sólo si la tabla
+  tiene columnas datetime; checkbox por columna.
 
 ### Ejecución y observabilidad
 - Persistencia automática en DB de runs (debug=true).
@@ -561,6 +590,37 @@ job_eta, job_finished
     "Propiedades del proyecto" del Diseño; globales en la sección
     "Parámetros de Ejecución" del sidebar.
 
+14. **Cap de paralelismo por proyecto** (`cfg.settings.max_parallel_steps`):
+    el supervisor mantiene una cola `to_launch` y antes de spawnear chequea
+    `running_count < max`. Los que no caben quedan en la cola con state
+    `Ready` (la UI los muestra como "Esperando"). Cuando termina un step,
+    se reintenta drenar. `None` ⇒ sin cap.
+
+15. **Control granular del job** (`JobControl { drain, cancel_step_ids,
+    notify }`): el supervisor usa `tokio::select!` entre `rx.recv()`,
+    `cancel.cancelled()` y `notify.notified()`. El frontend dispara
+    `request_drain` o `request_cancel_step` y el supervisor despierta
+    aunque no haya mensajes de step en vuelo. **Drain** marca todos los
+    Pending/Ready como Cancelled. **Cancel-step** acepta también Running
+    si el step tiene `sql_session`: lanza `KILL <SPID>` via lease paralelo
+    del pool — el cliente que tiene la query libera el lease cuando
+    detecta el error del servidor.
+
+16. **Captura del SPID**: en `sql_query.rs`, antes del `simple_query` del
+    usuario, se ejecuta `SELECT @@SPID` **en el mismo lease** (mismo
+    cliente físico = misma sesión TDS). El SID se emite via
+    `ProgressReporter::sql_session` y queda en `StepInfo.sql_session`.
+    Se limpia al pasar el step a terminal. La UI lo muestra en la cola
+    como badge cyan `SPID NN`.
+
+17. **Default datetime → date**: tiberius con feature `chrono` extrae
+    `NaiveDate`/`NaiveDateTime`. polars recibe columnas tipadas `Date` y
+    `Datetime(µs)`. Después se llama `normalize_temporal_columns(df,
+    keep_time_columns)` que castea Datetime → Date salvo las columnas
+    listadas. Razón: la gran mayoría de los reportes usa solo fecha;
+    forzar Datetime contamina la UI con `00:00:00` y trae problemas de
+    huso. El usuario opt-in con `keep_time_columns: ["fecha_log", ...]`.
+
 ## Trampas conocidas (NO repetir)
 
 ### Build/runtime
@@ -666,36 +726,39 @@ Variables de entorno opcionales:
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
-- **Tabs Parámetros / Respuestas guardadas** en `ParametersPanel` con
-  presets parciales: checkbox por parámetro para incluir/excluir,
-  contador `X / N`, helper visual (cyan vs surface). Al crear un preset
-  desde la tab de Parámetros, el panel salta a Respuestas y lo deja
-  expandido.
-- **Autocomplete de tabla** (`step_editors/TableCombobox.tsx`): el
-  usuario tipea, filtra por substring case-insensitive con ranking,
-  navegación con flechas, resaltado del match. Reemplaza el `<select>`
-  del `SqlQueryVisual`. Si tipea libre `schema.name` y no matchea, el
-  efecto de columnas splittea manualmente.
-- **Elegir tabla fuerza modo visual**: el callback del combobox llama a
-  `setMode("visual")` cuando hay valor, así el SELECT se reconstruye
-  con todas las columnas. Pisa SQL manual previo a propósito (es lo
-  esperado al elegir tabla).
-- **Default conn = última usada** en pasos SQL nuevos. Helpers
-  `readLastUsedConnection` / `writeLastUsedConnection` en
-  `DesignEditor.tsx`, clave `milhouse.lastUsedConnection`.
-- **Test de conexión reusa password guardada**: parche en
-  `test_connection_endpoint` (`src/api/routes.rs`): si el body trae
-  spec sin password (o `null`/`""`) y la conexión ya existe,
-  completamos con la del snapshot. Antes el botón Test fallaba en
-  modo edit cuando el usuario no retipeaba la password.
-- **Contraste del botón Cancelar en tema claro**: `.milhouse-btn-secondary`
-  pasa a slate-300 sobre paneles blancos con borde slate-500 y texto
-  slate-950 (slate-200 quedaba indistinguible).
-- **Monitor SQL con filtros y orden**: caja de búsqueda free-text
-  (login/programa/SQL/etc), headers clickeables con ▲/▼, default
-  `elapsed_minutes` desc. Contador `N/total` cuando filtra.
-- **`.gitignore`**: agregado `/data/preloaded/*` con `.gitkeep` para
-  no trackear los zips importados.
+- **Bundle offline funcional**: backend salta validaciones de
+  conexión/`:param` para steps preloadeados; scheduler marca los
+  preloadeados como `Done` con sample real (no Skipped) y persiste
+  el dataset si `debug=true`. En el front: botón **"📦 ▶ Ejecutar
+  desde Datos Importados"** (corre todo salvo los preloadeados),
+  nodos importados con badge "📦 IMPORTADO" + borde cyan punteado,
+  refresco automático del estado al importar (lanza job parcial sólo
+  sobre los preloadeados).
+- **Fechas tipadas + truncado a Date por default**: tiberius via
+  `FromSql` chrono → polars `Date`/`Datetime(µs)`.
+  `normalize_temporal_columns` castea Datetime → Date salvo las listadas
+  en `sql_query.keep_time_columns`. UI muestra `dd/mm/yyyy` (oculta la
+  parte horaria si es 00:00:00). Editor visual con sección "Columnas con
+  hora" (checkbox por columna datetime detectada).
+- **Setup_and_run robusto**: `scripts/lib_ports.sh|ps1` con detección
+  portable de procesos en :8090/:3000 (lsof / fuser / netstat según OS).
+  `setup_and_run.*` libera puertos antes del `cargo build` (evita
+  "Access is denied" en Windows si milhouse.exe ya corre). `start.*`
+  espera al frontend y abre el browser solo. Flags `--force` /
+  `--no-browser`.
+- **Cap de paralelismo por proyecto** (`cfg.settings.max_parallel_steps`):
+  editor en Propiedades del proyecto. Scheduler respeta el cap al
+  spawnear.
+- **Cola de ejecución en vivo** (`RunQueuePanel`): buckets por estado,
+  botones Drenar / Cancelar todo / ✕ por paso. Endpoints nuevos:
+  `POST /api/jobs/:id/drain` y `POST /api/jobs/:id/cancel-step/:step_id`.
+  Control granular via `JobControl { drain, cancel_step_ids, notify }`
+  con `tokio::select!` en el supervisor.
+- **KILL real de SQL Server al cancelar Running**: captura de `@@SPID`
+  en el mismo lease antes del query. `StepInfo.sql_session` se emite
+  como evento WS `step_sql_session`. Al cancelar un step Running con
+  `sql_session`, se manda `KILL <SPID>` via lease paralelo del pool.
+  UI muestra badge `SPID NN` cyan en la cola.
 
 Pendientes mencionados pero NO implementados (preguntá antes de empezarlos):
 - **Sección Debug**: navegador read-only sobre runs históricas con
@@ -716,9 +779,9 @@ Pendientes mencionados pero NO implementados (preguntá antes de empezarlos):
 - Persistencia del registry de jobs en memoria — los jobs corriendo se
   pierden si reinicia el server (igual queda persistido el final state en
   la DB de runs).
-- **Cancel real de SQL Server / MySQL queries**: hoy `tokio::select!`
-  libera el cliente pero la consulta sigue en el servidor. Implementar
-  cancel real requeriría exponer `KILL <sid>` automático en el motor.
+- **Cancel real de MySQL queries**: SQL Server ya está implementado
+  (KILL del SPID al cancelar un step Running). MySQL todavía libera el
+  cliente con `tokio::select!` pero la consulta sigue en el servidor.
 - **review-sql con downstream context completo**: el dispatcher manda
   step_id y output_columns pero todavía no construye el grafo de
   columnas consumidas downstream. El AI hace lo que puede sin eso.

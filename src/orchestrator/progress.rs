@@ -30,6 +30,14 @@ pub enum ProgressEvent {
         duration_ms: u128,
         sample: Option<TableSample>,
     },
+    /// Una query del step quedó asignada a una sesión en SQL Server.
+    /// Se usa para mostrar el SPID en la UI y para poder matar la sesión
+    /// con KILL si el usuario cancela el step.
+    StepSqlSession {
+        step_id: String,
+        connection: String,
+        sid: i32,
+    },
     JobEta {
         job_pct: f32,
         eta_seconds: Option<u64>,
@@ -65,6 +73,10 @@ pub enum StepUpdate {
         error: String,
     },
     Cancelled,
+    SqlSession {
+        connection: String,
+        sid: i32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +156,12 @@ impl ProgressReporter {
         let _ = self.tx.try_send(StepUpdateMsg {
             step_id: self.step_id.clone(),
             update: StepUpdate::Cancelled,
+        });
+    }
+    pub fn sql_session(&self, connection: String, sid: i32) {
+        let _ = self.tx.try_send(StepUpdateMsg {
+            step_id: self.step_id.clone(),
+            update: StepUpdate::SqlSession { connection, sid },
         });
     }
 }

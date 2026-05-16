@@ -179,6 +179,21 @@ export async function cancelJob(id: string): Promise<void> {
   if (!r.ok && r.status !== 204) throw new Error(`cancelJob ${r.status}`);
 }
 
+/** Drena el job: deja terminar los Running pero cancela todos los Pending/Ready. */
+export async function drainJob(id: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/api/jobs/${id}/drain`, { method: "POST" });
+  if (!r.ok && r.status !== 204) throw new Error(`drainJob ${r.status}`);
+}
+
+/** Cancela un step individual. Solo aplica si está Pending/Ready. */
+export async function cancelStep(jobId: string, stepId: string): Promise<void> {
+  const r = await fetch(
+    `${API_BASE}/api/jobs/${jobId}/cancel-step/${encodeURIComponent(stepId)}`,
+    { method: "POST" },
+  );
+  if (!r.ok && r.status !== 204) throw new Error(`cancelStep ${r.status}`);
+}
+
 export async function listConnections(): Promise<ConnectionsResponse> {
   const r = await fetch(`${API_BASE}/api/connections`, { cache: "no-store" });
   if (!r.ok) throw new Error(`listConnections ${r.status}`);

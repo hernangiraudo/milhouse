@@ -58,6 +58,17 @@ pub struct StepInfo {
     /// para que el front pueda mostrar una descripción detallada.
     #[serde(default)]
     pub spec: serde_json::Value,
+    /// Sesión SQL Server activa del step (si está corriendo una query y la
+    /// detectamos via `SELECT @@SPID` antes de despachar). Permite mostrar
+    /// el SID en la cola y matar la query con `KILL` al cancelar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql_session: Option<SqlSessionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SqlSessionInfo {
+    pub connection: String,
+    pub sid: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

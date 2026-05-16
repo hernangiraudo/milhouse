@@ -32,7 +32,14 @@ pub async fn run(
             select_with_cancel(work, cancel, "ODBC query").await?
         }
         OpenedConnection::SqlServer(pool) => {
-            sql_server_query_cancellable(pool.clone(), q, cancel).await?
+            sql_server_query_cancellable(
+                pool.clone(),
+                q,
+                cancel,
+                connection.unwrap_or("(default)").to_string(),
+                reporter.clone(),
+            )
+            .await?
         }
         OpenedConnection::Mysql(pool) => mysql_query_cancellable(pool.clone(), q, cancel).await?,
     };
@@ -202,17 +209,21 @@ async fn sql_server_query_cancellable(
     pool: Arc<super::context::SqlServerPool>,
     sql: String,
     cancel: CancellationToken,
+    connection_name: String,
+    reporter: ProgressReporter,
 ) -> Result<DataFrame> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(anyhow!("SQL Server query cancelado por el usuario (la consulta sigue en el servidor)")),
-        res = sql_server_query(pool, sql) => res,
+        res = sql_server_query(pool, sql, connection_name, reporter) => res,
     }
 }
 
 async fn sql_server_query(
     pool: Arc<super::context::SqlServerPool>,
     sql: String,
+    connection_name: String,
+    reporter: ProgressReporter,
 ) -> Result<DataFrame> {
     use futures::TryStreamExt;
     use tiberius::ColumnData;
@@ -227,6 +238,33 @@ async fn sql_server_query(
     let mut cols: Vec<Vec<ColumnData<'static>>> = Vec::new();
     {
         let mut lease = pool.acquire().await?;
+        // Capturamos @@SPID en el mismo cliente ANTES de ejecutar la query
+        // del usuario. Mismo cliente físico = misma sesión SQL Server,
+        // por lo que el SID que devuelve identifica exactamente la sesión
+        // que va a procesar la query siguiente. Notificamos al supervisor
+        // así la UI lo muestra y el cancel-step puede mandar KILL.
+        {
+            let client = lease.client_mut();
+            if let Ok(mut spid_stream) = client.simple_query("SELECT @@SPID").await {
+                use futures::TryStreamExt;
+                use tiberius::QueryItem;
+                while let Ok(Some(item)) = spid_stream.try_next().await {
+                    if let QueryItem::Row(row) = item {
+                        if let Some(cell) = row.into_iter().next() {
+                            let sid: Option<i32> = match cell {
+                                ColumnData::I16(Some(v)) => Some(v as i32),
+                                ColumnData::I32(Some(v)) => Some(v),
+                                ColumnData::I64(Some(v)) => Some(v as i32),
+                                _ => None,
+                            };
+                            if let Some(s) = sid {
+                                reporter.sql_session(connection_name.clone(), s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let client = lease.client_mut();
         let mut stream = client
             .simple_query(sql.clone())

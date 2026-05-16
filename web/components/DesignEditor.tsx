@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import {
   API_BASE,
   cancelJob,
+  cancelStep,
   createConfig,
   createJob,
+  drainJob,
   datasetPreview,
   deletePreload,
   exportRunBundleUrl,
@@ -27,6 +29,7 @@ import { LogsPanel } from "./LogsPanel";
 import { SamplePanel } from "./SamplePanel";
 import type { LogLine, TableSample } from "@/lib/types";
 import { ParametersPanel } from "./ParametersPanel";
+import { RunQueuePanel } from "./RunQueuePanel";
 import { ParameterPromptDialog } from "./ParameterPromptDialog";
 import { ApiExposurePanel } from "./ApiExposurePanel";
 
@@ -59,6 +62,11 @@ export interface ProjectApiConfig {
   accept_parameters?: boolean;
 }
 
+export interface ProjectSettings {
+  /** Cantidad máxima de pasos en paralelo. null/undefined = sin límite. */
+  max_parallel_steps?: number | null;
+}
+
 type ProjectShape = {
   name: string;
   version?: number;
@@ -72,6 +80,7 @@ type ProjectShape = {
   parameters?: ParamSpec[];
   presets?: ParamPreset[];
   api?: ProjectApiConfig;
+  settings?: ProjectSettings;
   duckdb_path?: string | null;
   [k: string]: unknown;
 };
@@ -121,6 +130,12 @@ export function DesignEditor({
   const [stepSamples, setStepSamples] = useState<Record<string, TableSample>>(
     {},
   );
+  // step_id → sesión SQL Server activa. Se llena cuando llega un evento
+  // step_sql_session y se limpia al terminal del step. Permite mostrar
+  // el SPID en la cola y cancelar Running con KILL.
+  const [stepSessions, setStepSessions] = useState<
+    Record<string, { connection: string; sid: number }>
+  >({});
   const [execTab, setExecTab] = useState<"logs" | "sample">("logs");
   // "Propiedades del proyecto": grupos / parámetros / API. Colapsable.
   const [propsOpen, setPropsOpen] = useState(false);
@@ -194,6 +209,7 @@ export function DesignEditor({
               state: { state: string } | string;
               logs?: LogLine[];
               sample?: TableSample | null;
+              sql_session?: { connection: string; sid: number } | null;
             }
           >;
         };
@@ -201,6 +217,10 @@ export function DesignEditor({
         const next: Record<string, NodeStatus> = {};
         const logsMerge: Record<string, LogLine[]> = {};
         const samplesMerge: Record<string, TableSample> = {};
+        const sessionsMerge: Record<
+          string,
+          { connection: string; sid: number } | null
+        > = {};
         for (const [k, v] of Object.entries(j.steps)) {
           // Si hay subset activo, ignorar pasos fuera del subset (sus badges
           // previos deben preservarse).
@@ -210,8 +230,17 @@ export function DesignEditor({
           next[k] = s as NodeStatus;
           if (v.logs && v.logs.length > 0) logsMerge[k] = v.logs;
           if (v.sample) samplesMerge[k] = v.sample;
+          sessionsMerge[k] = v.sql_session ?? null;
         }
         setStepStates((prev) => ({ ...prev, ...next }));
+        setStepSessions((prev) => {
+          const out = { ...prev };
+          for (const [k, v] of Object.entries(sessionsMerge)) {
+            if (v) out[k] = v;
+            else delete out[k];
+          }
+          return out;
+        });
         setStepLogs((prev) => {
           // sólo overwrite si el snapshot trae más logs que lo que tenemos
           const out = { ...prev };
@@ -242,6 +271,21 @@ export function DesignEditor({
             ...p,
             [sid]: stName as NodeStatus,
           }));
+          // Si pasó a terminal, limpiamos la sesión SQL asociada — el
+          // SPID ya no aplica (lo cancelaron, falló o terminó).
+          if (
+            stName === "done" ||
+            stName === "failed" ||
+            stName === "cancelled" ||
+            stName === "skipped"
+          ) {
+            setStepSessions((p) => {
+              if (!(sid in p)) return p;
+              const out = { ...p };
+              delete out[sid];
+              return out;
+            });
+          }
         } else if (m.type === "step_log" && sid && inSubset) {
           const line: LogLine = {
             at: new Date().toISOString(),
@@ -249,12 +293,28 @@ export function DesignEditor({
             line: (m.line as string) ?? "",
           };
           setStepLogs((p) => ({ ...p, [sid]: [...(p[sid] ?? []), line] }));
+        } else if (m.type === "step_sql_session" && sid && inSubset) {
+          const connection = m.connection as string | undefined;
+          const ssid = m.sid as number | undefined;
+          if (connection && typeof ssid === "number") {
+            setStepSessions((p) => ({
+              ...p,
+              [sid]: { connection, sid: ssid },
+            }));
+          }
         } else if (m.type === "step_completed" && sid && inSubset) {
           setStepStates((p) => ({ ...p, [sid]: "done" }));
           const sample = m.sample as TableSample | null | undefined;
           if (sample) {
             setStepSamples((p) => ({ ...p, [sid]: sample }));
           }
+          // El step terminó: limpiar su sesión SQL si tenía una.
+          setStepSessions((p) => {
+            if (!(sid in p)) return p;
+            const out = { ...p };
+            delete out[sid];
+            return out;
+          });
         } else if (m.type === "job_finished") {
           // Pull final por las dudas
           pullSnapshot();
@@ -1198,6 +1258,44 @@ export function DesignEditor({
         />
       </div>
 
+      {/* Cola de ejecución en vivo: visible mientras hay job activo. */}
+      {activeJobId && (
+        <RunQueuePanel
+          jobId={activeJobId}
+          steps={cfg.steps}
+          stepStates={stepStates}
+          stepSessions={stepSessions}
+          activeSubset={activeSubset}
+          onCancelAll={async () => {
+            try {
+              await cancelJob(activeJobId);
+            } catch (e) {
+              await dialog.alert(`No se pudo cancelar: ${e}`, {
+                variant: "danger",
+              });
+            }
+          }}
+          onDrain={async () => {
+            try {
+              await drainJob(activeJobId);
+            } catch (e) {
+              await dialog.alert(`No se pudo drenar: ${e}`, {
+                variant: "danger",
+              });
+            }
+          }}
+          onCancelStep={async (sid) => {
+            try {
+              await cancelStep(activeJobId, sid);
+            } catch (e) {
+              await dialog.alert(`No se pudo cancelar el paso: ${e}`, {
+                variant: "danger",
+              });
+            }
+          }}
+        />
+      )}
+
       {/* Panel de ejecución del step seleccionado (logs + sample) */}
       {selectedIdx != null &&
         cfg.steps[selectedIdx] &&
@@ -1302,6 +1400,39 @@ export function DesignEditor({
                   className="w-full milhouse-field"
                 />
               </Field>
+            </div>
+
+            {/* Parámetros de ejecución del proyecto */}
+            <div className="bg-panel border border-surface rounded-xl p-3">
+              <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+                Parámetros de ejecución
+              </h4>
+              <div className="grid grid-cols-[1fr_2fr] gap-3 items-end">
+                <Field label="Máx. pasos en paralelo">
+                  <input
+                    type="number"
+                    min={1}
+                    max={64}
+                    placeholder="sin límite"
+                    value={cfg.settings?.max_parallel_steps ?? ""}
+                    onChange={(e) => {
+                      const raw = e.target.value.trim();
+                      const num = raw === "" ? null : Math.max(1, Number(raw));
+                      const next: ProjectSettings = {
+                        ...(cfg.settings ?? {}),
+                        max_parallel_steps: num,
+                      };
+                      updateProject("settings", next);
+                    }}
+                    className="w-full milhouse-field"
+                  />
+                </Field>
+                <p className="text-[11px] text-dim leading-snug">
+                  Dejá vacío para sin límite (lanza todos los <code>ready</code>{" "}
+                  en paralelo). Bajalo si tu base se satura con muchas queries
+                  simultáneas. Para serial estricto poné <code>1</code>.
+                </p>
+              </div>
             </div>
 
             {/* Grupos */}

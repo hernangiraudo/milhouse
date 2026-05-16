@@ -22,6 +22,37 @@ pub struct JobHandle {
     pub cancel: CancellationToken,
     pub state: Arc<RwLock<JobState>>,
     pub broadcaster: broadcast::Sender<ProgressEvent>,
+    /// Solicitudes de cancelación granular. El supervisor las lee y
+    /// actúa entre iteraciones del loop principal.
+    pub control: Arc<RwLock<JobControl>>,
+}
+
+/// Estado de cancelaciones parciales. El frontend marca `drain=true` para
+/// frenar los pendientes/ready pero dejar terminar los Running. Cada
+/// `cancel_step_ids` se procesa una vez y se vacía.
+#[derive(Debug)]
+pub struct JobControl {
+    /// Cuando es true, cualquier paso que estaba esperando slot o ready
+    /// se marca Cancelled y no se lanzan más nuevos. Los Running terminan
+    /// naturalmente y el job finaliza.
+    pub drain: bool,
+    /// Step ids a cancelar individualmente. Solo aplica a Pending/Ready
+    /// (el Running se respeta — habría que matar la query desde el motor,
+    /// pendiente de otra tanda).
+    pub cancel_step_ids: HashSet<String>,
+    /// Notify para que el supervisor despierte ante una nueva señal
+    /// aunque no haya mensajes en el mpsc principal.
+    pub notify: Arc<tokio::sync::Notify>,
+}
+
+impl Default for JobControl {
+    fn default() -> Self {
+        Self {
+            drain: false,
+            cancel_step_ids: HashSet::new(),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
 }
 
 impl JobHandle {
@@ -33,6 +64,22 @@ impl JobHandle {
     }
     pub async fn snapshot(&self) -> JobState {
         self.state.read().await.clone()
+    }
+    pub async fn request_drain(&self) {
+        let notify = {
+            let mut c = self.control.write().await;
+            c.drain = true;
+            c.notify.clone()
+        };
+        notify.notify_one();
+    }
+    pub async fn request_cancel_step(&self, step_id: String) {
+        let notify = {
+            let mut c = self.control.write().await;
+            c.cancel_step_ids.insert(step_id);
+            c.notify.clone()
+        };
+        notify.notify_one();
     }
 }
 
@@ -93,6 +140,7 @@ pub async fn run_job(
                 logs: Vec::new(),
                 sample: None,
                 spec,
+                sql_session: None,
             },
         );
     }
@@ -149,12 +197,14 @@ pub async fn run_job(
     let state = Arc::new(RwLock::new(job_state));
     let (broadcaster, _) = broadcast::channel::<ProgressEvent>(1024);
     let cancel = CancellationToken::new();
+    let control: Arc<RwLock<JobControl>> = Arc::new(RwLock::new(JobControl::default()));
 
     let handle = JobHandle {
         job_id: job_id.clone(),
         cancel: cancel.clone(),
         state: state.clone(),
         broadcaster: broadcaster.clone(),
+        control: control.clone(),
     };
 
     // El pool y run_store vienen del AppState (compartidos). Esto evita que
@@ -194,6 +244,7 @@ pub async fn run_job(
         state,
         broadcaster,
         cancel,
+        control,
         run_store,
         job_id.clone(),
         debug,
@@ -211,6 +262,7 @@ async fn supervisor_and_scheduler(
     state: Arc<RwLock<JobState>>,
     broadcaster: broadcast::Sender<ProgressEvent>,
     cancel: CancellationToken,
+    control: Arc<RwLock<JobControl>>,
     run_store: Option<Arc<crate::runs::RunStore>>,
     job_id_owned: String,
     debug: bool,
@@ -432,10 +484,122 @@ async fn supervisor_and_scheduler(
         set_step_state(&state, sid, StepRuntimeState::Ready, &broadcaster).await;
     }
 
-    // Lanzar todos los ready iniciales
+    // Cola de pasos listos para lanzarse. Se vacía respetando el cap de
+    // paralelismo. Si un step queda en la cola sin slot, su estado sigue
+    // siendo Ready y el front lo muestra como "esperando slot".
     let mut to_launch = std::mem::take(&mut ready);
+    // None ⇒ sin cap (lanza todo lo ready). Algunos valores típicos:
+    // 1 (serial), 4, 8.
+    let max_parallel: Option<usize> = cfg.settings.max_parallel_steps;
 
     loop {
+        // Procesar señales de control granular (drain + cancel-step-N).
+        // El drain es equivalente a "cancelar todo lo pendiente pero dejar
+        // terminar los Running"; cancel_step solo afecta Pending/Ready.
+        let (drain, cancel_ids) = {
+            let mut c = control.write().await;
+            let cs: Vec<String> = c.cancel_step_ids.drain().collect();
+            (c.drain, cs)
+        };
+        if drain {
+            // Marcar todos los Pending/Ready como Cancelled. No tocamos
+            // Running — los dejamos terminar.
+            let to_cancel: Vec<String> = {
+                let s = state.read().await;
+                s.step_order
+                    .iter()
+                    .filter(|id| {
+                        let st = s.steps.get(*id).unwrap();
+                        matches!(st.state, StepRuntimeState::Pending | StepRuntimeState::Ready)
+                    })
+                    .cloned()
+                    .collect()
+            };
+            for id in &to_cancel {
+                set_step_state(&state, id, StepRuntimeState::Cancelled, &broadcaster).await;
+                done_or_terminal.insert(id.clone());
+            }
+            to_launch.clear();
+        }
+        for sid in cancel_ids {
+            // Leemos el estado + sql_session bajo lock corto.
+            let (st, session) = {
+                let s = state.read().await;
+                let info = s.steps.get(&sid);
+                (
+                    info.map(|i| i.state.clone()),
+                    info.and_then(|i| i.sql_session.clone()),
+                )
+            };
+            let is_pending = matches!(
+                st,
+                Some(StepRuntimeState::Pending) | Some(StepRuntimeState::Ready)
+            );
+            let is_running = matches!(st, Some(StepRuntimeState::Running { .. }));
+
+            // Caso Running con sesión SQL Server conocida: lanzamos KILL
+            // <sid> via cliente paralelo del pool. El cliente que está
+            // corriendo la query se libera cuando el motor detecta el
+            // error y vuelve. El KILL no necesita bloquear el supervisor.
+            if is_running {
+                if let Some(sess) = session.clone() {
+                    let pool = connections.clone();
+                    let sid_clone = sid.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = kill_sql_server_session(
+                            pool,
+                            &sess.connection,
+                            sess.sid,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                "KILL falló para step {sid_clone} (SPID {}): {e:#}",
+                                sess.sid
+                            );
+                        } else {
+                            tracing::info!(
+                                "KILL enviado para step {sid_clone} (SPID {})",
+                                sess.sid
+                            );
+                        }
+                    });
+                }
+            }
+
+            // Tanto en Pending/Ready como en Running con KILL despachado:
+            // marcamos Cancelled inmediatamente y marcamos los
+            // descendientes como Skipped por dependencia rota. El task
+            // del step Running terminará en Err (queries killed) y eso
+            // genera un StepUpdate::Failed que el match de abajo procesa
+            // — pero como el step ya está terminal, set_step_state no
+            // hará daño (sobrescribe sólo a quien no esté terminal).
+            if is_pending || is_running {
+                set_step_state(&state, &sid, StepRuntimeState::Cancelled, &broadcaster).await;
+                done_or_terminal.insert(sid.clone());
+                if is_running {
+                    running_count = running_count.saturating_sub(1);
+                }
+                to_launch.retain(|x| x != &sid);
+                let descendants = collect_descendants(&dag.successors, &sid);
+                for d in descendants {
+                    if !done_or_terminal.contains(&d) {
+                        set_step_state(
+                            &state,
+                            &d,
+                            StepRuntimeState::Skipped {
+                                reason: format!("dependencia cancelada: {sid}"),
+                            },
+                            &broadcaster,
+                        )
+                        .await;
+                        done_or_terminal.insert(d.clone());
+                        to_launch.retain(|x| x != &d);
+                    }
+                }
+            }
+        }
+
         // Si el job fue cancelado, marcar pendientes/ready como Cancelled
         if cancel.is_cancelled() {
             let pending_ids: Vec<String> = {
@@ -456,7 +620,18 @@ async fn supervisor_and_scheduler(
             to_launch.clear();
         }
 
+        // Lanzar de la cola respetando el cap de paralelismo. Si max es
+        // None, lanza todo. Si max es Some(N), lanza solo lo que cabe;
+        // el resto queda en to_launch esperando que termine alguno.
+        let mut launched_now = 0usize;
+        let mut keep_waiting: Vec<String> = Vec::new();
         for sid in to_launch.drain(..) {
+            if let Some(max) = max_parallel {
+                if running_count >= max {
+                    keep_waiting.push(sid);
+                    continue;
+                }
+            }
             let step = step_by_id.get(&sid).cloned().unwrap();
             let reporter = ProgressReporter::new(
                 sid.clone(),
@@ -470,17 +645,39 @@ async fn supervisor_and_scheduler(
                 params: resolved_params.clone(),
             };
             running_count += 1;
+            launched_now += 1;
             step_started_at.insert(sid.clone(), Instant::now());
             tokio::spawn(run_one_step(step, ctx, reporter, tables.clone()));
         }
+        to_launch = keep_waiting;
+        let _ = launched_now; // por si queremos métricas más adelante
 
         // Si no hay nada corriendo y nada por lanzar, terminamos
         if running_count == 0 && to_launch.is_empty() {
             break;
         }
 
-        // Procesar updates
-        let Some(msg) = rx.recv().await else { break };
+        // Procesar updates: o llega un mensaje de un step (start/progress/
+        // log/completed/failed) o el frontend nos despierta con una señal
+        // de control (drain / cancel-step / cancel global).
+        let control_notify = { control.read().await.notify.clone() };
+        let msg = tokio::select! {
+            biased;
+            _ = control_notify.notified() => {
+                // No es un mensaje de step — volvemos al tope del loop para
+                // procesar las señales nuevas de control.
+                continue;
+            }
+            _ = cancel.cancelled() => {
+                // El cancel global llegó. La iteración siguiente ya lo
+                // detecta arriba y marca pendientes/ready como Cancelled.
+                continue;
+            }
+            recv = rx.recv() => match recv {
+                Some(m) => m,
+                None => break,
+            }
+        };
         let step_id_at_msg = msg.step_id.clone();
         match msg.update {
             StepUpdate::Started => {
@@ -570,6 +767,7 @@ async fn supervisor_and_scheduler(
                             row_count,
                         };
                         info.sample = sample.clone();
+                        info.sql_session = None;
                     }
                 }
                 let _ = broadcaster.send(ProgressEvent::StepCompleted {
@@ -612,6 +810,7 @@ async fn supervisor_and_scheduler(
                             finished_at: Utc::now(),
                             error: error.clone(),
                         };
+                        info.sql_session = None;
                     }
                 }
                 let _ = broadcaster.send(ProgressEvent::StepLog {
@@ -682,6 +881,24 @@ async fn supervisor_and_scheduler(
                     .await;
                 done_or_terminal.insert(msg.step_id.clone());
                 running_count = running_count.saturating_sub(1);
+            }
+            StepUpdate::SqlSession { connection, sid } => {
+                {
+                    let mut s = state.write().await;
+                    if let Some(info) = s.steps.get_mut(&msg.step_id) {
+                        info.sql_session = Some(
+                            crate::orchestrator::state::SqlSessionInfo {
+                                connection: connection.clone(),
+                                sid,
+                            },
+                        );
+                    }
+                }
+                let _ = broadcaster.send(ProgressEvent::StepSqlSession {
+                    step_id: msg.step_id.clone(),
+                    connection,
+                    sid,
+                });
             }
         }
 
@@ -945,6 +1162,32 @@ fn any_value_to_json(v: Option<AnyValue>) -> JsonValue {
         }
         Some(other) => JsonValue::String(other.to_string()),
     }
+}
+
+/// Lanza `KILL <sid>` contra la conexión SQL Server indicada. Usa un
+/// lease nuevo del pool (no toca el cliente que tiene la query del step
+/// corriendo) — eso es lo que hace que el cancel funcione: la query del
+/// step recibe el error de cancelación del lado del servidor y libera
+/// su lease cuando vuelve.
+async fn kill_sql_server_session(
+    pool: Arc<ConnectionPool>,
+    connection: &str,
+    sid: i32,
+) -> anyhow::Result<()> {
+    use anyhow::anyhow;
+    let opened = pool.get_any(Some(connection)).await?;
+    let pool = match &*opened {
+        crate::engine::OpenedConnection::SqlServer(p) => p.clone(),
+        _ => return Err(anyhow!("la conexión `{connection}` no es SQL Server")),
+    };
+    let mut lease = pool.acquire().await?;
+    let client = lease.client_mut();
+    let sql = format!("KILL {sid}");
+    client
+        .simple_query(sql)
+        .await
+        .map_err(|e| anyhow!("KILL {sid}: {e}"))?;
+    Ok(())
 }
 
 fn collect_descendants(succ: &HashMap<String, Vec<String>>, root: &str) -> Vec<String> {
