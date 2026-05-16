@@ -571,6 +571,17 @@ export function SqlQueryVisual({
           }}
           height="220px"
           connection={conn || null}
+          reviewContext={{
+            step_id: step.id,
+            connection_type:
+              connections?.connections.find((c) => c.name === conn)?.type ??
+              undefined,
+            output_columns: columns.map((c) => ({
+              name: c.name,
+              data_type: c.data_type,
+              is_primary_key: c.is_primary_key ?? false,
+            })),
+          }}
         />
         <p className="text-[11px] text-dim">
           {mode === "manual"

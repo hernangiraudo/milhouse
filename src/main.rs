@@ -102,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sql/check", post(routes::check_sql_endpoint))
         .route("/api/ai/available", get(routes::ai_available))
         .route("/api/ai/build-step", post(routes::ai_build_step))
+        .route("/api/ai/review-sql", post(routes::ai_review_sql))
         .route(
             "/api/registry/procedural",
             get(routes::list_registry_procedural),
@@ -139,6 +140,20 @@ async fn main() -> anyhow::Result<()> {
             get(routes::preload_status)
                 .post(routes::import_preload)
                 .delete(routes::delete_preload),
+        )
+        // Roadmap
+        .route(
+            "/api/roadmap",
+            get(routes::list_roadmap).post(routes::create_roadmap_item),
+        )
+        .route(
+            "/api/roadmap/:id",
+            axum::routing::patch(routes::update_roadmap_item)
+                .delete(routes::delete_roadmap_item),
+        )
+        .route(
+            "/api/roadmap/:id/comments",
+            get(routes::list_roadmap_comments).post(routes::add_roadmap_comment),
         )
         // Casos
         .route(

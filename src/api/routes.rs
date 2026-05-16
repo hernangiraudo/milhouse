@@ -560,6 +560,16 @@ pub async fn ai_build_step(
     }
 }
 
+pub async fn ai_review_sql(
+    State(_state): State<AppState>,
+    Json(req): Json<crate::ai::ReviewSqlReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    match crate::ai::review_sql(req).await {
+        Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
+        Err(e) => Err((StatusCode::BAD_REQUEST, format!("{e:#}"))),
+    }
+}
+
 pub async fn ai_available(State(_state): State<AppState>) -> Json<Value> {
     let configured = std::env::var("ANTHROPIC_API_KEY").is_ok();
     Json(json!({ "available": configured }))
@@ -1394,4 +1404,138 @@ fn sanitize_for_path(s: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
         .collect()
+}
+
+// =====================================================================
+// Roadmap (pedidos de mejora)
+// =====================================================================
+
+#[derive(serde::Deserialize)]
+pub struct CreateRoadmapReq {
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "default_roadmap_severity")]
+    pub severity: String,
+    #[serde(default)]
+    pub created_by: Option<String>,
+}
+fn default_roadmap_severity() -> String {
+    "normal".into()
+}
+
+pub async fn list_roadmap(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let store = run_store_or_503(&state).await?;
+    let r = store
+        .query(
+            "SELECT i.id, i.title, i.description, i.severity, i.status,
+                    i.created_by, i.created_at, i.updated_at,
+                    (SELECT COUNT(*) FROM roadmap_comments c WHERE c.item_id = i.id) AS comments_count
+             FROM roadmap_items i ORDER BY i.created_at DESC"
+                .into(),
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(serde_json::to_value(r).unwrap()))
+}
+
+pub async fn create_roadmap_item(
+    State(state): State<AppState>,
+    Json(req): Json<CreateRoadmapReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let store = run_store_or_503(&state).await?;
+    let id = store
+        .create_roadmap_item(req.title, req.description, req.severity, req.created_by)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(json!({ "id": id })))
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct UpdateRoadmapReq {
+    #[serde(default)]
+    pub title: Option<String>,
+    /// `Some(None)` borra la descripción; `Some(Some(s))` la cambia; `None` no toca.
+    #[serde(default, deserialize_with = "deserialize_optional_optional_string")]
+    pub description: Option<Option<String>>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+fn deserialize_optional_optional_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::Null => Ok(Some(None)),
+        serde_json::Value::String(s) => Ok(Some(Some(s))),
+        _ => Err(serde::de::Error::custom(
+            "description debe ser string o null",
+        )),
+    }
+}
+
+pub async fn update_roadmap_item(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateRoadmapReq>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let store = run_store_or_503(&state).await?;
+    store
+        .update_roadmap_item(id, req.title, req.description, req.severity, req.status)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_roadmap_item(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let store = run_store_or_503(&state).await?;
+    store
+        .delete_roadmap_item(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AddRoadmapCommentReq {
+    pub body: String,
+    #[serde(default)]
+    pub author: Option<String>,
+}
+
+pub async fn list_roadmap_comments(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let store = run_store_or_503(&state).await?;
+    let r = store
+        .list_roadmap_comments(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(serde_json::to_value(r).unwrap()))
+}
+
+pub async fn add_roadmap_comment(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<AddRoadmapCommentReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let store = run_store_or_503(&state).await?;
+    let cid = store
+        .add_roadmap_comment(id, req.author, req.body)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(json!({ "id": cid })))
 }

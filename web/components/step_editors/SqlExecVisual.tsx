@@ -82,6 +82,12 @@ export function SqlExecVisual({
           onChange={(v) => onChange({ ...step, query: v })}
           height="320px"
           connection={conn || null}
+          reviewContext={{
+            step_id: step.id,
+            connection_type:
+              connections?.connections.find((c) => c.name === conn)?.type ??
+              undefined,
+          }}
         />
         <p className="text-[11px] text-dim mt-1">
           Separá varias sentencias con <code>;</code>. Cada una se ejecuta por

@@ -9,6 +9,7 @@ import { CasesPanel } from "@/components/CasesPanel";
 import { SchedulesPanel } from "@/components/SchedulesPanel";
 import { DesignPanel } from "@/components/DesignPanel";
 import { ExecParamsPanel } from "@/components/ExecParamsPanel";
+import { RoadmapPanel } from "@/components/RoadmapPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UserChip } from "@/components/LoginGate";
 
@@ -20,7 +21,8 @@ type Section =
   | "review"
   | "cases"
   | "connections"
-  | "users";
+  | "users"
+  | "roadmap";
 
 const SECTIONS: Array<{ id: Section; label: string; icon: string }> = [
   { id: "design", label: "Diseño", icon: "✏️" },
@@ -31,6 +33,7 @@ const SECTIONS: Array<{ id: Section; label: string; icon: string }> = [
   { id: "cases", label: "Casos", icon: "🗂" },
   { id: "connections", label: "Conexiones", icon: "🔌" },
   { id: "users", label: "Usuarios", icon: "👤" },
+  { id: "roadmap", label: "Roadmap", icon: "🗺️" },
 ];
 
 export default function Home() {
@@ -90,6 +93,7 @@ export default function Home() {
           {section === "cases" && <CasesPanel />}
           {section === "connections" && <ConnectionsPanel />}
           {section === "users" && <UsersPanel />}
+          {section === "roadmap" && <RoadmapPanel />}
         </div>
       </main>
     </div>

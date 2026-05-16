@@ -15,6 +15,25 @@ type CheckResult =
   | { kind: "ok"; supported: boolean; note?: string }
   | { kind: "error"; error: string };
 
+interface AiSuggestion {
+  title: string;
+  detail: string;
+  severity?: "info" | "warn" | "major";
+  suggested_sql?: string | null;
+}
+interface AiReview {
+  summary?: string;
+  severity?: "info" | "warn" | "major";
+  suggestions?: AiSuggestion[];
+}
+
+interface ReviewContext {
+  step_id?: string;
+  connection_type?: string;
+  downstream?: unknown;
+  output_columns?: unknown;
+}
+
 export function SqlEditor({
   value,
   onChange,
@@ -22,6 +41,7 @@ export function SqlEditor({
   readOnly = false,
   connection,
   showToolbar = true,
+  reviewContext,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -30,14 +50,48 @@ export function SqlEditor({
   /** Conexión a usar para el chequeo de sintaxis (si soporta). */
   connection?: string | null;
   showToolbar?: boolean;
+  /** Contexto para Milhouse-AI revisor: step_id, downstream, etc. */
+  reviewContext?: ReviewContext;
 }) {
   const theme = useTheme();
   const [check, setCheck] = useState<CheckResult>({ kind: "idle" });
+  const [reviewing, setReviewing] = useState(false);
+  const [review, setReview] = useState<AiReview | null>(null);
+  const [reviewErr, setReviewErr] = useState<string | null>(null);
 
   function onFormat() {
     if (readOnly) return;
     const next = prettyFormatSql(value);
     if (next !== value) onChange(next);
+  }
+
+  async function onAiReview() {
+    setReviewing(true);
+    setReview(null);
+    setReviewErr(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/ai/review-sql`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sql: value,
+          step_id: reviewContext?.step_id ?? null,
+          connection_type: reviewContext?.connection_type ?? null,
+          downstream: reviewContext?.downstream ?? [],
+          output_columns: reviewContext?.output_columns ?? [],
+        }),
+      });
+      if (!r.ok) {
+        setReviewErr(await r.text());
+        return;
+      }
+      const j = (await r.json()) as { review?: AiReview; raw?: string };
+      setReview(j.review ?? null);
+    } catch (e) {
+      setReviewErr(String(e));
+    } finally {
+      setReviewing(false);
+    }
   }
 
   async function onCheck() {
@@ -90,6 +144,15 @@ export function SqlEditor({
           >
             {check.kind === "checking" ? "Chequeando…" : "✓ Chequear sintaxis"}
           </button>
+          <button
+            type="button"
+            onClick={onAiReview}
+            disabled={!value.trim() || reviewing}
+            title="Milhouse-AI analiza el SQL en el contexto del proyecto y sugiere mejoras"
+            className="text-xs px-2 py-1 rounded border border-emerald-700 bg-emerald-500/20 text-emerald-300 disabled:opacity-50"
+          >
+            {reviewing ? "Analizando…" : "✨ Revisar con Milhouse-AI"}
+          </button>
           {check.kind === "ok" && (
             <span
               className="text-[11px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-700"
@@ -136,6 +199,109 @@ export function SqlEditor({
           }}
         />
       </div>
+
+      {/* Resultado del review AI */}
+      {(review || reviewErr) && (
+        <div className="bg-surface-2 border border-surface rounded p-3 mt-2 space-y-2">
+          <div className="flex items-center justify-between">
+            <h5 className="text-xs uppercase tracking-wider text-muted">
+              Revisión Milhouse-AI
+            </h5>
+            <button
+              type="button"
+              onClick={() => {
+                setReview(null);
+                setReviewErr(null);
+              }}
+              className="text-xs text-dim hover:text-app"
+              title="Cerrar"
+            >
+              ✕
+            </button>
+          </div>
+          {reviewErr && (
+            <div className="text-xs text-red-400 whitespace-pre-wrap">
+              {reviewErr}
+            </div>
+          )}
+          {review && (
+            <>
+              {review.summary && (
+                <div className="text-sm flex items-start gap-2">
+                  <span
+                    className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                      review.severity === "major"
+                        ? "bg-red-500/20 text-red-300 border border-red-700"
+                        : review.severity === "warn"
+                        ? "bg-amber-500/20 text-amber-300 border border-amber-700"
+                        : "bg-cyan-500/20 text-cyan-300 border border-cyan-700"
+                    }`}
+                  >
+                    {review.severity ?? "info"}
+                  </span>
+                  <span className="flex-1">{review.summary}</span>
+                </div>
+              )}
+              {review.suggestions && review.suggestions.length === 0 && (
+                <div className="text-xs text-emerald-300">
+                  ✓ Sin sugerencias — el SQL se ve bien.
+                </div>
+              )}
+              {review.suggestions && review.suggestions.length > 0 && (
+                <ol className="space-y-2 text-sm">
+                  {review.suggestions.map((s, i) => (
+                    <li
+                      key={i}
+                      className="bg-surface border border-surface-strong rounded p-2"
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] text-dim">#{i + 1}</span>
+                        <span
+                          className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                            s.severity === "major"
+                              ? "bg-red-500/20 text-red-300 border border-red-700"
+                              : s.severity === "warn"
+                              ? "bg-amber-500/20 text-amber-300 border border-amber-700"
+                              : "bg-cyan-500/20 text-cyan-300 border border-cyan-700"
+                          }`}
+                        >
+                          {s.severity ?? "info"}
+                        </span>
+                        <span className="font-medium">{s.title}</span>
+                      </div>
+                      <div className="text-xs text-muted whitespace-pre-wrap">
+                        {s.detail}
+                      </div>
+                      {s.suggested_sql && (
+                        <details className="mt-2">
+                          <summary className="text-xs text-accent cursor-pointer">
+                            Ver SQL sugerido
+                          </summary>
+                          <pre className="milhouse-codeblock text-xs mt-1 whitespace-pre-wrap">
+                            {s.suggested_sql}
+                          </pre>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!readOnly && s.suggested_sql) {
+                                onChange(s.suggested_sql);
+                              }
+                            }}
+                            disabled={readOnly}
+                            className="text-xs mt-1 px-2 py-1 rounded milhouse-btn-secondary disabled:opacity-50"
+                          >
+                            Aplicar este SQL
+                          </button>
+                        </details>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

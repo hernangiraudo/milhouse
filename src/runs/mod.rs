@@ -120,6 +120,28 @@ CREATE TABLE IF NOT EXISTS schedules (
     last_fired_at   TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+
+CREATE SEQUENCE IF NOT EXISTS roadmap_id_seq START 1;
+CREATE TABLE IF NOT EXISTS roadmap_items (
+    id            BIGINT PRIMARY KEY DEFAULT nextval('roadmap_id_seq'),
+    title         VARCHAR NOT NULL,
+    description   VARCHAR,
+    severity      VARCHAR NOT NULL DEFAULT 'normal',     -- low|normal|high
+    status        VARCHAR NOT NULL DEFAULT 'open',       -- open|planned|done|rejected
+    created_by    VARCHAR,
+    created_at    TIMESTAMP NOT NULL,
+    updated_at    TIMESTAMP
+);
+CREATE SEQUENCE IF NOT EXISTS roadmap_comment_id_seq START 1;
+CREATE TABLE IF NOT EXISTS roadmap_comments (
+    id            BIGINT PRIMARY KEY DEFAULT nextval('roadmap_comment_id_seq'),
+    item_id       BIGINT NOT NULL,
+    author        VARCHAR,
+    body          VARCHAR NOT NULL,
+    created_at    TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_roadmap_status ON roadmap_items(status);
+CREATE INDEX IF NOT EXISTS idx_roadmap_comments_item ON roadmap_comments(item_id);
 "#;
 
 /// Nombre lógico de la conexión usada para la DB de runs. Definida en
@@ -231,10 +253,27 @@ fn duck_value_to_json(v: duckdb::types::Value) -> serde_json::Value {
 
 impl RunStore {
     /// Inicializa el store: pide la conexión `runs` al pool y aplica el schema.
-    /// Si la conexión no está declarada, devuelve `Ok(None)` y el resto del
-    /// sistema sigue funcionando sin persistencia de runs (con un warning).
+    /// Busca el nombre de conexión case-insensitive: "runs", "Runs", "RUNS"
+    /// son válidos. Si la conexión no está declarada, devuelve `Ok(None)` y
+    /// el resto del sistema sigue funcionando sin persistencia (con un warning).
     pub async fn open(pool: &ConnectionPool) -> Result<Option<Self>> {
-        match pool.get_duckdb(Some(RUNS_CONNECTION)).await {
+        // Resolver el nombre real (con case original) buscando case-insensitive
+        // en el snapshot del archivo.
+        let resolved_name = {
+            let file = pool.snapshot_file().await;
+            file.connections
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(RUNS_CONNECTION))
+                .map(|c| c.name.clone())
+        };
+        let Some(name) = resolved_name else {
+            tracing::warn!(
+                "runs DB not configured (connection `{}` is not defined); job/step history will not be persisted",
+                RUNS_CONNECTION
+            );
+            return Ok(None);
+        };
+        match pool.get_duckdb(Some(&name)).await {
             Ok(conn) => {
                 {
                     let guard = conn.lock().await;
@@ -769,6 +808,132 @@ impl RunStore {
             Ok(out)
         })
         .await?
+    }
+
+    // -----------------------------------------------------------------
+    // Roadmap (pedidos de mejora)
+    // -----------------------------------------------------------------
+
+    pub async fn create_roadmap_item(
+        &self,
+        title: String,
+        description: Option<String>,
+        severity: String,
+        created_by: Option<String>,
+    ) -> Result<i64> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<i64> {
+            let guard = conn.blocking_lock();
+            guard.execute(
+                "INSERT INTO roadmap_items (title, description, severity, status, created_by, created_at)
+                 VALUES (?, ?, ?, 'open', ?, ?)",
+                params![
+                    title,
+                    description,
+                    severity,
+                    created_by,
+                    Utc::now().naive_utc().to_string()
+                ],
+            )?;
+            let id: i64 = guard.query_row("SELECT currval('roadmap_id_seq')", [], |r| r.get(0))?;
+            Ok(id)
+        })
+        .await?
+    }
+
+    pub async fn update_roadmap_item(
+        &self,
+        id: i64,
+        title: Option<String>,
+        description: Option<Option<String>>,
+        severity: Option<String>,
+        status: Option<String>,
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let guard = conn.blocking_lock();
+            let mut sets: Vec<&'static str> = Vec::new();
+            let mut vals: Vec<duckdb::types::Value> = Vec::new();
+            if let Some(t) = title {
+                sets.push("title = ?");
+                vals.push(duckdb::types::Value::Text(t));
+            }
+            if let Some(d) = description {
+                sets.push("description = ?");
+                vals.push(match d {
+                    Some(s) => duckdb::types::Value::Text(s),
+                    None => duckdb::types::Value::Null,
+                });
+            }
+            if let Some(s) = severity {
+                sets.push("severity = ?");
+                vals.push(duckdb::types::Value::Text(s));
+            }
+            if let Some(s) = status {
+                sets.push("status = ?");
+                vals.push(duckdb::types::Value::Text(s));
+            }
+            if sets.is_empty() {
+                return Ok(());
+            }
+            sets.push("updated_at = ?");
+            vals.push(duckdb::types::Value::Text(
+                Utc::now().naive_utc().to_string(),
+            ));
+            let sql = format!(
+                "UPDATE roadmap_items SET {} WHERE id = ?",
+                sets.join(", ")
+            );
+            vals.push(duckdb::types::Value::BigInt(id));
+            guard.execute(&sql, duckdb::params_from_iter(vals))?;
+            Ok(())
+        })
+        .await?
+    }
+
+    pub async fn delete_roadmap_item(&self, id: i64) -> Result<()> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let guard = conn.blocking_lock();
+            guard.execute(
+                "DELETE FROM roadmap_comments WHERE item_id = ?",
+                params![id],
+            )?;
+            guard.execute("DELETE FROM roadmap_items WHERE id = ?", params![id])?;
+            Ok(())
+        })
+        .await?
+    }
+
+    pub async fn add_roadmap_comment(
+        &self,
+        item_id: i64,
+        author: Option<String>,
+        body: String,
+    ) -> Result<i64> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<i64> {
+            let guard = conn.blocking_lock();
+            guard.execute(
+                "INSERT INTO roadmap_comments (item_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                params![item_id, author, body, Utc::now().naive_utc().to_string()],
+            )?;
+            let id: i64 = guard.query_row(
+                "SELECT currval('roadmap_comment_id_seq')",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok(id)
+        })
+        .await?
+    }
+
+    pub async fn list_roadmap_comments(&self, item_id: i64) -> Result<QueryResult> {
+        self.query(format!(
+            "SELECT id, author, body, created_at
+             FROM roadmap_comments WHERE item_id = {item_id} ORDER BY created_at"
+        ))
+        .await
     }
 
     // -----------------------------------------------------------------
