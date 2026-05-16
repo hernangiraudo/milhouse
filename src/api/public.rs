@@ -54,25 +54,42 @@ pub async fn run_project(
     enforce_token(&cfg.api, &headers)?;
 
     let req = body.map(|Json(b)| b).unwrap_or_default();
-    let parameters = if cfg.api.accept_parameters {
+    let mut parameters = if cfg.api.accept_parameters {
         req.parameters
     } else {
         HashMap::new()
     };
 
-    // Mergear parámetros globales sobre los locales (local pisa).
+    // Merge selectivo: sólo los globales que el proyecto declaró en
+    // `selected_global_params`. Local pisa global. Mismo criterio que el
+    // endpoint interno `/api/jobs`.
     {
         let globals = state.global_params.read().await.clone();
+        let selected: std::collections::HashSet<String> = cfg
+            .selected_global_params
+            .iter()
+            .cloned()
+            .collect();
         let local_names: std::collections::HashSet<String> = cfg
             .parameters
             .iter()
             .map(|p| p.name.clone())
             .collect();
         for g in &globals.parameters {
+            if !selected.contains(&g.name) {
+                continue;
+            }
             if !local_names.contains(&g.name) {
                 cfg.parameters.push(g.clone());
             }
         }
+    }
+
+    // Aplicar run_defaults del proyecto como fallback.
+    for (name, value) in &cfg.run_defaults {
+        parameters
+            .entry(name.clone())
+            .or_insert_with(|| value.clone());
     }
 
     // Validar que cualquier :param referenciado tenga valor (mismo check

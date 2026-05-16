@@ -19,17 +19,29 @@ import { useDialog } from "./Dialog";
  *
  * Al confirmar, llama a `onResolved(values)` con el Record<name, value>.
  */
+export interface PresetGroupDto {
+  name: string;
+  description?: string | null;
+  preset_names: string[];
+}
+
 export function ParameterPromptDialog({
   parameters,
   presets,
+  presetGroups,
   defaultRunName,
+  initialValues,
   onCancel,
   onResolved,
 }: {
   parameters: ParamSpec[];
   presets: ParamPreset[];
+  presetGroups?: PresetGroupDto[];
   /** Sugerencia para el nombre de la ejecución (ej. "Demo · 2026-05-16"). */
   defaultRunName?: string;
+  /** Valores por default que pre-rellenan los inputs. Vienen del
+   *  `run_defaults` del proyecto. El usuario puede sobreescribirlos. */
+  initialValues?: Record<string, ParamValueJson>;
   onCancel: () => void;
   onResolved: (args: {
     values: Record<string, ParamValueJson>;
@@ -38,7 +50,9 @@ export function ParameterPromptDialog({
 }) {
   const dialog = useDialog();
   const [selectedPresets, setSelectedPresets] = useState<string[]>([]);
-  const [overrides, setOverrides] = useState<Record<string, ParamValueJson>>({});
+  const [overrides, setOverrides] = useState<Record<string, ParamValueJson>>(
+    () => ({ ...(initialValues ?? {}) }),
+  );
   const [runName, setRunName] = useState<string>(defaultRunName ?? "");
 
   // Merge presets en orden de selección.
@@ -113,6 +127,64 @@ export function ParameterPromptDialog({
             corrés el mismo proyecto con distintos parámetros.
           </p>
         </label>
+
+        {presetGroups && presetGroups.length > 0 && (
+          <div className="bg-surface-2 border border-surface rounded p-2 mb-3">
+            <div className="text-[11px] uppercase tracking-wider text-dim mb-1">
+              Grupo de respuestas
+            </div>
+            <p className="text-[11px] text-dim mb-1.5">
+              Elegir un grupo aplica todas sus respuestas de una. Después
+              podés afinar los valores abajo si querés.
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {presetGroups.map((g) => {
+                const allSelected =
+                  g.preset_names.length > 0 &&
+                  g.preset_names.every((n) => selectedPresets.includes(n));
+                return (
+                  <button
+                    key={g.name}
+                    onClick={() => {
+                      // Aplicar grupo = setear selectedPresets a sus presets
+                      // en orden. Si ya estaba aplicado, lo quitamos.
+                      if (allSelected) {
+                        setSelectedPresets((prev) =>
+                          prev.filter((n) => !g.preset_names.includes(n)),
+                        );
+                      } else {
+                        const rest = selectedPresets.filter(
+                          (n) => !g.preset_names.includes(n),
+                        );
+                        setSelectedPresets([...rest, ...g.preset_names]);
+                      }
+                    }}
+                    className={`text-xs px-2 py-1 rounded border ${
+                      allSelected
+                        ? "border-cyan-600"
+                        : "milhouse-btn-secondary border-surface-strong"
+                    }`}
+                    style={
+                      allSelected
+                        ? { background: "var(--accent)", color: "var(--accent-ink)" }
+                        : undefined
+                    }
+                    title={
+                      (g.description ? g.description + " · " : "") +
+                      `Aplica: ${g.preset_names.join(", ")}`
+                    }
+                  >
+                    {allSelected ? "✓ " : "📦 "}
+                    {g.name}
+                    <span className="text-[10px] opacity-75 ml-1">
+                      ({g.preset_names.length})
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {presets.length > 0 && (
           <div className="bg-surface-2 border border-surface rounded p-2 mb-3">
@@ -243,6 +315,8 @@ function kindLabel(k: ParamSpec["kind"]): string {
       return "número";
     case "text":
       return "texto";
+    case "boolean":
+      return "sí/no";
     case "list_number":
       return "lista (números)";
     case "list_text":
@@ -289,6 +363,17 @@ function ValueEditor({
           onChange={(e) => onChange(e.target.value || null)}
           className="milhouse-field text-sm w-full"
         />
+      )}
+      {k === "boolean" && (
+        <select
+          value={typeof value === "string" ? value : ""}
+          onChange={(e) => onChange(e.target.value || null)}
+          className="milhouse-field text-sm w-full"
+        >
+          <option value="">(sin respuesta)</option>
+          <option value="1">Sí</option>
+          <option value="0">No</option>
+        </select>
       )}
       {list && (
         <>

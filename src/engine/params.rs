@@ -213,7 +213,9 @@ fn render_param(name: &str, params: &ResolvedParams, out_so_far: &str) -> Result
         let spec = params.specs.get(name);
         let kind = spec.map(|s| s.kind);
         let quote = match kind {
-            Some(ParamKind::Number) | Some(ParamKind::ListNumber) => false,
+            Some(ParamKind::Number)
+            | Some(ParamKind::ListNumber)
+            | Some(ParamKind::Boolean) => false,
             _ => true,
         };
         let in_context = detect_in_context(out_so_far);

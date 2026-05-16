@@ -25,6 +25,18 @@ pub struct EtlConfig {
     /// FechaDesde y FechaHasta).
     #[serde(default)]
     pub presets: Vec<ParamPreset>,
+    /// Nombres de parámetros declarados en `configs/parameters.json` (los
+    /// globales) que aplican a este proyecto. Solo los listados acá se
+    /// mergean a `parameters` al ejecutar. Si la lista está vacía, NO se
+    /// usa ningún global — el proyecto es 100% explícito. Si un nombre
+    /// coincide con un parámetro local, el local pisa al global.
+    #[serde(default)]
+    pub selected_global_params: Vec<String>,
+    /// Respuestas por default a parámetros del proyecto (locales y
+    /// globales seleccionados). Pre-llenan el prompt de ejecución; el
+    /// usuario puede confirmar o sobreescribir antes de lanzar.
+    #[serde(default)]
+    pub run_defaults: HashMap<String, ParamValue>,
     /// Configuración para exponer el proyecto como API REST pública.
     #[serde(default)]
     pub api: ApiConfig,
@@ -89,6 +101,10 @@ pub enum ParamKind {
     ListNumber,
     /// Lista de strings.
     ListText,
+    /// Booleano (Sí/No). UI: select Sí/No. Sustitución en SQL: `1` o `0`
+    /// (literal sin quotes, portable a cualquier motor). En scripting
+    /// rhai/rust el valor llega como entero 1/0 también.
+    Boolean,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -60,10 +60,18 @@ export function ConstantsPanel() {
       const r = await fetch(`${API_BASE}/api/constants`, { cache: "no-store" });
       if (!r.ok) throw new Error(await r.text());
       const j = (await r.json()) as Partial<ConstantsFile>;
-      setData({
+      const next: ConstantsFile = {
         groups: j.groups ?? [],
         constants: j.constants ?? [],
-      });
+      };
+      setData(next);
+      // Por default todo colapsado: la vista arranca como una lista de
+      // grupos clickeables, no un dump de todas las constantes.
+      const allGroupKeys = new Set<string>([
+        ...next.groups.map((g) => g.name),
+        "", // bucket "sin grupo"
+      ]);
+      setCollapsed(allGroupKeys);
       setDirty(false);
       setErr(null);
     } catch (e) {
@@ -108,7 +116,7 @@ export function ConstantsPanel() {
         .filter((c) => (c.group ?? null) === (group ?? null))
         .map((c) => c.name.toLowerCase()),
     );
-    let base = "NuevaConstante";
+    const base = "NuevaConstante";
     let name = base;
     let n = 2;
     while (existing.has(name.toLowerCase())) {
@@ -126,6 +134,13 @@ export function ConstantsPanel() {
           value: "0",
         },
       ],
+    });
+    // Expandir el grupo donde se agregó para que el usuario vea la
+    // constante nueva.
+    setCollapsed((p) => {
+      const out = new Set(p);
+      out.delete(group ?? "");
+      return out;
     });
   }
 
@@ -147,9 +162,16 @@ export function ConstantsPanel() {
       },
     });
     if (!name?.trim()) return;
+    const newName = name.trim();
     update({
       ...data,
-      groups: [...data.groups, { name: name.trim() }],
+      groups: [...data.groups, { name: newName }],
+    });
+    // Nuevo grupo nace colapsado (consistente con la vista por default).
+    setCollapsed((p) => {
+      const out = new Set(p);
+      out.add(newName);
+      return out;
     });
   }
 
@@ -306,7 +328,6 @@ export function ConstantsPanel() {
               onDelete={() => deleteGroup(g.name)}
               onUpdate={updateConstant}
               onDeleteConstant={deleteConstant}
-              availableGroups={data.groups.map((x) => x.name)}
             />
           ))}
 
@@ -320,7 +341,6 @@ export function ConstantsPanel() {
               onAdd={() => addConstant()}
               onUpdate={updateConstant}
               onDeleteConstant={deleteConstant}
-              availableGroups={data.groups.map((x) => x.name)}
             />
           )}
 
@@ -346,7 +366,6 @@ function GroupSection({
   onDelete,
   onUpdate,
   onDeleteConstant,
-  availableGroups,
 }: {
   groupName: string;
   items: { idx: number; c: ConstantSpec }[];
@@ -357,7 +376,6 @@ function GroupSection({
   onDelete?: () => void;
   onUpdate: (idx: number, next: ConstantSpec) => void;
   onDeleteConstant: (idx: number) => void;
-  availableGroups: string[];
 }) {
   const label = groupName === "" ? "(sin grupo)" : groupName;
   return (
@@ -485,30 +503,9 @@ function GroupSection({
                         />
                       </td>
                       <td className="px-2 py-1">
-                        <div className="flex items-center gap-1">
-                          <code className="text-[11px] text-dim font-mono">
-                            :{ref}
-                          </code>
-                          {/* Mover a otro grupo */}
-                          <select
-                            value={c.group ?? ""}
-                            onChange={(e) =>
-                              onUpdate(idx, {
-                                ...c,
-                                group: e.target.value || null,
-                              })
-                            }
-                            className="milhouse-field text-[10px] py-0 px-1"
-                            title="Mover a otro grupo"
-                          >
-                            <option value="">(sin grupo)</option>
-                            {availableGroups.map((g) => (
-                              <option key={g} value={g}>
-                                {g}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
+                        <code className="text-[11px] text-dim font-mono">
+                          :{ref}
+                        </code>
                       </td>
                       <td className="px-2 py-1 text-right">
                         <button

@@ -14,7 +14,7 @@ expliques nada en prosa, no envuelvas en markdown.
 El JSON debe tener estos campos:
 - "id": string snake_case corto
 - "kind": uno de "sql_query", "sql_exec", "join", "lookup", "transform",
-   "filter_and_subset", "sort", "export", "procedural"
+   "filter_and_subset", "sort", "export", "procedural", "union"
 - "depends_on": array de step ids previos (puede ser vacío)
 - "group": string opcional (puede omitirse)
 - campos específicos por kind:
@@ -33,13 +33,56 @@ El JSON debe tener estos campos:
            "output_table": "..." }
   export: { "input": "...", "target": {"kind":"file","format":"csv|parquet|json","path":"..."}
             | {"kind":"duckdb","table":"...","replace":bool} }
-  procedural: { "input": "...", "engine":"rhai"|"rust", ... }
+  procedural: { "input": "...", "engine":"rhai"|"rust", "script": "..." (rhai)
+                | "fn_name": "..." (rust), "state_init": {...}, "output_table": "..." }
+  union: { "inputs": ["step1","step2",...], "output_table": "..." }
 
 Reglas importantes:
 - Usá nombres de tablas/conexiones que estén en el CONTEXTO si los hay.
 - Si no se especifica conexión, dejala fuera o pon "default" como conexión.
 - output_table debe ser único entre pasos.
 - depends_on usa los step ids del contexto que correspondan.
+
+NUNCA hagas:
+- "input": null o cadena vacía. El campo `input` es OBLIGATORIO y debe
+  ser el step_id (o nombre de tabla) que produce los datos a procesar.
+  Aplica a: lookup, transform, filter_and_subset, sort, export, procedural.
+- Steps procedural sin input. El procedural ITERA filas de una tabla; sin
+  input no puede correr. Si no hay tabla de entrada, NO uses procedural.
+- Scripts rhai que solo declaran variables locales sin retornar/escribir
+  filas. El script de rhai en procedural se ejecuta una vez por fila y
+  debe devolver la fila (eventualmente modificada) o null para descartar.
+
+PARÁMETROS Y SUSTITUCIÓN DINÁMICA (importante)
+==============================================
+El motor sustituye `:nombre` por el valor del parámetro ANTES de despachar
+el SQL. Lista de reglas:
+- `:FechaDesde` → 'YYYY-MM-DD' con quotes si es date/text.
+- `:Comitente` (number)  → literal sin quotes.
+- `:Lista` (list_number) → expansion en IN(...): "WHERE c IN (:Lista)"
+  se transforma a "WHERE c IN (1, 2, 3)" automáticamente. Fuera de IN
+  se renderiza coma-separada.
+- `:Grupo.Nombre` → constante global (sin quotes si number/raw_sql,
+  con quotes si text). Las constantes raw_sql sirven para predicados
+  reutilizables: `WHERE :Filtros.OpcionYFuturo` se expande a la
+  expresión literal definida.
+
+Por eso, para construir un WHERE con parámetro, NO uses procedural ni
+sql_exec previo: poné el `:param` directamente en el sql_query. Ejemplos:
+
+  Mal:
+    procedural { script: "let w = ...; if params.Comitente != null { ... }" }
+    + sql_query depende { query: "... WHERE " + w }
+  Bien:
+    sql_query { query: "SELECT * FROM tx WHERE ComitenteNumero IN (:Comitente)" }
+
+Si la consulta debe variar entre "incluir filtro" y "no incluirlo" según
+el valor del parámetro, no es problema del AI: el operador maneja eso con
+otro parámetro booleano o con dos respuestas (presets) distintas.
+
+Si la descripción del usuario es ambigua o pide algo que no encaja en
+ningún kind, devolvé el step más razonable que SÍ ejecute (preferir
+sql_query con `:param` antes que procedural).
 "#;
 
 #[derive(Debug, Deserialize)]
@@ -88,14 +131,70 @@ pub async fn build_step(req: BuildStepReq) -> Result<BuildStepResp> {
         req.description,
     );
 
+    // Primer intento.
+    let (step_value_1, raw_1) =
+        call_anthropic_for_step(&api_key, &user_msg, &[]).await?;
+    let (step_value, raw) = match validate_step(&step_value_1) {
+        Ok(()) => (step_value_1, raw_1),
+        Err(validation_err) => {
+            tracing::info!(
+                "AI generó un step inválido ({validation_err}); reintentando con feedback"
+            );
+            // Retry: le mandamos el JSON inválido + el error para que corrija.
+            let prior = vec![
+                ("assistant".to_string(), raw_1.clone()),
+                (
+                    "user".to_string(),
+                    format!(
+                        "Ese JSON no es válido para Milhouse:\n  {validation_err}\n\n\
+                         Corregilo y devolveme SOLO el JSON corregido (sin comentarios, \
+                         sin markdown). Revisá especialmente:\n\
+                         - el campo `input` no puede ser null ni vacío.\n\
+                         - los nombres de campos respetan el shape declarado en el system prompt.\n\
+                         - si el step no encaja en ningún kind, preferí sql_query con `:param`\n\
+                           directamente en la query antes que procedural.",
+                    ),
+                ),
+            ];
+            let (step_value_2, raw_2) =
+                call_anthropic_for_step(&api_key, &user_msg, &prior).await?;
+            match validate_step(&step_value_2) {
+                Ok(()) => (step_value_2, raw_2),
+                Err(e) => {
+                    return Err(anyhow!(
+                        "El AI no logró generar un step válido después de 2 intentos. \
+                         Último error: {e}.\nÚltimo intento:\n{}",
+                        raw_2.chars().take(800).collect::<String>()
+                    ));
+                }
+            }
+        }
+    };
+
+    Ok(BuildStepResp {
+        step: step_value,
+        raw,
+    })
+}
+
+/// Hace una llamada a Anthropic devolviendo el JSON ya parseado + el texto
+/// crudo. `prior_turns` permite encadenar mensajes (para retries con
+/// feedback del error de validación).
+async fn call_anthropic_for_step(
+    api_key: &str,
+    user_msg: &str,
+    prior_turns: &[(String, String)],
+) -> Result<(Value, String)> {
+    let mut messages = vec![json!({ "role": "user", "content": user_msg })];
+    for (role, content) in prior_turns {
+        messages.push(json!({ "role": role, "content": content }));
+    }
+
     let body = json!({
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": 2048,
         "system": SYSTEM_PROMPT,
-        "messages": [{
-            "role": "user",
-            "content": user_msg,
-        }],
+        "messages": messages,
     });
 
     let client = reqwest::Client::new();
@@ -120,11 +219,13 @@ pub async fn build_step(req: BuildStepReq) -> Result<BuildStepResp> {
     }
     let body_json: Value =
         serde_json::from_str(&body_text).context("parsing Anthropic response")?;
-    // Anthropic responde { content: [{type:"text", text:"..."}], ... }
     let raw = body_json
         .get("content")
         .and_then(|c| c.as_array())
-        .and_then(|arr| arr.iter().find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text")))
+        .and_then(|arr| {
+            arr.iter()
+                .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+        })
         .and_then(|b| b.get("text"))
         .and_then(|t| t.as_str())
         .unwrap_or("")
@@ -135,7 +236,6 @@ pub async fn build_step(req: BuildStepReq) -> Result<BuildStepResp> {
             body_text.chars().take(500).collect::<String>()
         ));
     }
-    // Limpiar code fences si vienen.
     let cleaned = strip_code_fence(&raw);
     let step: Value = serde_json::from_str(cleaned).map_err(|e| {
         anyhow!(
@@ -143,7 +243,35 @@ pub async fn build_step(req: BuildStepReq) -> Result<BuildStepResp> {
             cleaned.chars().take(500).collect::<String>()
         )
     })?;
-    Ok(BuildStepResp { step, raw })
+    Ok((step, raw))
+}
+
+/// Valida el JSON contra el schema de Step. Devuelve un error legible si
+/// no parsea o si tiene problemas comunes que el motor rechazaría
+/// después (input null/vacío, etc).
+fn validate_step(v: &Value) -> std::result::Result<(), String> {
+    // Para que `step_uid` no sea requerido en este parse, lo asignamos
+    // sintéticamente si no está. El motor real lo asigna al cargar.
+    let mut v = v.clone();
+    if let Value::Object(map) = &mut v {
+        if !map.contains_key("step_uid") {
+            map.insert("step_uid".into(), Value::Null);
+        }
+    }
+    // Parse contra el shape canónico.
+    serde_json::from_value::<crate::config::Step>(v.clone())
+        .map(|_| ())
+        .map_err(|e| format!("{e}"))?;
+    // Reglas extra que serde acepta pero el motor rechaza después.
+    if let Some(input) = v.get("input") {
+        if matches!(input, Value::Null) {
+            return Err("el campo `input` no puede ser null".into());
+        }
+        if input.as_str().map(|s| s.is_empty()).unwrap_or(false) {
+            return Err("el campo `input` no puede ser una cadena vacía".into());
+        }
+    }
+    Ok(())
 }
 
 fn strip_code_fence(s: &str) -> &str {

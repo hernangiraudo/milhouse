@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { API_BASE } from "@/lib/api";
-import { ParametersPanel } from "./ParametersPanel";
+import { ParametersPanel, type PresetGroup } from "./ParametersPanel";
 import type { ParamPreset, ParamSpec } from "./DesignEditor";
 import { useDialog } from "./Dialog";
 
 interface GlobalParamsFile {
   parameters: ParamSpec[];
   presets: ParamPreset[];
+  preset_groups: PresetGroup[];
 }
 
 export function ExecParamsPanel() {
@@ -29,6 +30,7 @@ export function ExecParamsPanel() {
       setData({
         parameters: j.parameters ?? [],
         presets: j.presets ?? [],
+        preset_groups: j.preset_groups ?? [],
       });
       setDirty(false);
       setErr(null);
@@ -107,10 +109,20 @@ export function ExecParamsPanel() {
         <ParametersPanel
           parameters={data.parameters}
           presets={data.presets}
+          presetGroups={data.preset_groups}
           onChange={(next) => {
             setData({
               parameters: next.parameters,
               presets: next.presets,
+              preset_groups: data.preset_groups,
+            });
+            setDirty(true);
+          }}
+          onChangeGroups={(next) => {
+            setData({
+              parameters: data.parameters,
+              presets: data.presets,
+              preset_groups: next,
             });
             setDirty(true);
           }}

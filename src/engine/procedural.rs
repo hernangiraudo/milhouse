@@ -1,9 +1,10 @@
 use super::context::StepContext;
 use crate::config::ProceduralEngine;
 use crate::orchestrator::progress::ProgressReporter;
-use crate::scripting::{rhai_runner, rust_registry, ProcCtx};
+use crate::scripting::{rhai_runner, rust_registry, ProcCtx, ResolvedParamsForScripts};
 use anyhow::{anyhow, Result};
 use polars::frame::DataFrame;
+use std::sync::Arc;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -24,11 +25,23 @@ pub async fn run(
     let params = params.clone();
     let state_init = state_init.clone();
 
+    // Snapshot de los parámetros del proyecto para que el script los
+    // exponga como `params.NombreDelParametro` (rhai) o ctx.params_resolved
+    // (rust). Específico de cada job: si cambian en runtime, la corrida
+    // ya está corriendo con el snapshot inicial.
+    let specs: Vec<crate::config::ParamSpec> =
+        ctx.params.specs.values().cloned().collect();
+    let params_resolved = Arc::new(ResolvedParamsForScripts::new(
+        &specs,
+        &ctx.params.values,
+    ));
+
     tokio::task::spawn_blocking(move || -> Result<DataFrame> {
         let mut proc_ctx = ProcCtx {
             cancel,
             reporter,
             total_rows: total,
+            params_resolved,
         };
         match engine {
             ProceduralEngine::Rhai => {

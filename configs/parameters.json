@@ -17,6 +17,12 @@
       "kind": "number",
       "label": "Número de Comitente",
       "description": null
+    },
+    {
+      "name": "IncluirComitentesPrex",
+      "kind": "boolean",
+      "label": "Elegir \"Sí\" para dejar afuera a comitentes con ID entre 300M y 400M",
+      "description": null
     }
   ],
   "presets": [
@@ -35,5 +41,6 @@
         "Comitente": "17215"
       }
     }
-  ]
+  ],
+  "preset_groups": []
 }

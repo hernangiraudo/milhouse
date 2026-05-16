@@ -77,8 +77,9 @@ src/
                           ApiConfig (todo el modelo del proyecto)
     connections.rs        ConnectionsFile (connections.json)
     global_params.rs      GlobalParamsFile (configs/parameters.json):
-                          parámetros y respuestas COMPARTIDOS entre
-                          proyectos. Path env: MILHOUSE_GLOBAL_PARAMS_PATH.
+                          parámetros + respuestas + GRUPOS DE RESPUESTAS
+                          COMPARTIDOS entre proyectos. Path env:
+                          MILHOUSE_GLOBAL_PARAMS_PATH.
     constants.rs          GlobalConstantsFile (configs/constants.json):
                           códigos canónicos compartidos entre proyectos
                           (kind number|text|raw_sql), referenciados como
@@ -223,17 +224,30 @@ unión, así un proyecto puede usar `:FechaDesde` sin declararla si está
 declarada globalmente.
 
 `ParamSpec`: `{name, kind, label?, description?}` donde
-kind = `date | number | text | list_number | list_text`.
+kind = `date | number | text | boolean | list_number | list_text`.
 `ParamPreset`: `{name, description?, values: {paramName: ParamValue}}`
 para guardar respuestas (ej. "Year to Date" setea FechaDesde+FechaHasta).
+`PresetGroup`: `{name, description?, preset_names: [string]}` — grupos
+de respuestas (globales, en `parameters.json`). Al ejecutar, elegir un
+grupo aplica todos sus presets en orden (último gana por colisión).
 
 Uso en SQL/expresiones: `:NombreDelParametro`. El motor sustituye **antes**
 de despachar al backend SQL (en `engine/mod.rs`):
 - `date / text` → quoted, `'2025-12-31'`.
-- `number / list_number` → sin quotes.
+- `number / list_number / boolean` → sin quotes (`boolean` → `1` o `0`,
+  portable a cualquier motor SQL).
 - En contexto `IN (:Lista)` se expande a `IN (v1, v2, v3)` automáticamente
   (detección de IN scaneando hacia atrás en el output buffer).
 - Respeta strings, comentarios y `::cast` de Postgres.
+
+**Exposición a scripts procedurales** (rhai/rust): el `ProcCtx` lleva
+`params_resolved: Arc<ResolvedParamsForScripts>`. El `rhai_runner`
+construye un `Map` `params` que se pushea al scope con **coerción por
+kind** — `:Activo` (boolean) llega como `params.Activo = 1` (int 1/0),
+`:Comitente` (number) como `params.Comitente = 123` (i64/f64),
+`:Lista` (list_number) como array de ints. Los registry rust nativos
+siguen recibiendo `params: &serde_json::Value` separado para compat
+con el sistema viejo.
 
 El **prompt de parámetros** (`ParameterPromptDialog`) aparece al apretar
 Ejecutar si el subset de pasos a ejecutar referencia al menos un `:param`
@@ -430,6 +444,19 @@ step_sql_session, job_eta, job_finished
   `settings.max_parallel_steps` — input numérico. Vacío = sin límite;
   `1` = serial. El scheduler respeta este cap al spawnear; los ready
   que no caben quedan en cola con estado Ready.
+- **Opt-in de parámetros globales**: `EtlConfig.selected_global_params:
+  Vec<String>`. Solo los globales listados se mergean a `parameters`
+  al ejecutar. Si la lista está vacía → ningún global se aplica. UI en
+  Propiedades del proyecto con checkbox por global declarado. Antes
+  todos los globales se aplicaban por default; ahora es opt-in
+  explícito.
+- **"Propiedades de ejecución"** (panel propio colapsable, debajo de
+  Propiedades del proyecto): editor de `EtlConfig.run_defaults:
+  HashMap<String, ParamValue>` — respuestas por default que pre-rellenan
+  el prompt al ejecutar. Tabla con todos los parámetros disponibles
+  (locales + globales seleccionados), origen marcado (cyan/emerald),
+  editor por kind, ✕ por fila para borrar. El backend usa
+  `run_defaults` como fallback de `req.parameters` (request gana).
 - Cancelar job activo (botón ⏹ y opción en menú del nodo). DuckDB
   usa `interrupt_handle()`; SQL Server con `sql_session` capturado
   manda `KILL <SPID>` via lease paralelo del pool; MySQL/ODBC liberan
@@ -746,16 +773,43 @@ cargo run --bin milhouse                          # http://localhost:8090
 cd web && corepack pnpm install && corepack pnpm dev   # http://localhost:3000
 ```
 
-Variables de entorno opcionales:
+Variables de entorno opcionales (también se pueden poner en `.env` —
+copiar `.env.example`):
 - `ANTHROPIC_API_KEY`: habilita Milhouse-AI (build-step y review-sql).
 - `MILHOUSE_BIND`, `MILHOUSE_CONFIGS_DIR`, `MILHOUSE_CONNECTIONS_PATH`,
-  `MILHOUSE_USERS_PATH`, `MILHOUSE_GLOBAL_PARAMS_PATH` para overridear
-  paths/puertos del server.
+  `MILHOUSE_USERS_PATH`, `MILHOUSE_GLOBAL_PARAMS_PATH`,
+  `MILHOUSE_GLOBAL_CONSTANTS_PATH` para overridear paths/puertos.
+- `RUST_LOG` para el filtro de tracing.
 
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
-- **Constantes globales** (nueva sección "📐 Constantes" en el sidebar).
+- **Parámetro `boolean` (Sí/No)** — nuevo `ParamKind::Boolean`. Render SQL
+  `1`/`0` (portable). En rhai llega como `params.Nombre = 1` o `0`
+  (int, no string) gracias a la nueva coerción por kind en
+  `params_to_rhai_map`. UI: select "(sin respuesta)/Sí/No" en
+  `ParametersPanel`, `ParameterPromptDialog` y `RunDefaultEditor`.
+- **`ProcCtx.params_resolved`**: primera vez que el motor expone los
+  parámetros del proyecto al script. `ResolvedParamsForScripts` lleva
+  specs + values; rhai recibe `params` como `Map` global, con coerción
+  por kind (bool→int, number→i64/f64, list_number→array de números).
+- **Importar Excel como respuesta guardada**: botón "📂 Importar Excel"
+  en el tab "Respuestas guardadas" si hay parámetros de lista. Flujo:
+  elige el parámetro destino si hay varios, pide nombre del preset,
+  parsea el xlsx y crea el preset con la lista. Reutiliza
+  `parseExcelForParam` que ya existía.
+- **Grupos de Respuestas** — `GlobalParamsFile.preset_groups[]` con
+  `{name, description?, preset_names[]}`. UI: tercer tab "Grupos de
+  respuestas" en `ParametersPanel` (visible solo cuando se pasan
+  `presetGroups` + `onChangeGroups`, ie. globalmente — `ExecParamsPanel`
+  los pasa, los proyectos no porque son globales). En el prompt al
+  ejecutar, nuevo bloque "Grupo de respuestas" con badges clickeables;
+  al elegir uno, marca todos sus presets en orden (último gana).
+- **selected_global_params + run_defaults** (tanda previa): opt-in
+  explícito de globales por proyecto + panel "Propiedades de ejecución"
+  con respuestas default que pre-rellenan el prompt.
+- **Constantes globales** (tanda previa, sección "📐 Constantes" en el
+  sidebar).
   `configs/constants.json` con `groups[]` + `constants[]{name, group?,
   kind, value, description?}`. 3 kinds: `number`, `text`, `raw_sql`
   (útil para filtros reutilizables tipo `(GrupoID = 3004)`).

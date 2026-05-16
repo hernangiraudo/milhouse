@@ -1,4 +1,5 @@
-use super::ProcCtx;
+use super::{ProcCtx, ResolvedParamsForScripts};
+use crate::config::{ParamKind, ParamValue};
 use anyhow::{anyhow, Result};
 use polars::prelude::*;
 use rhai::{Dynamic, Engine, Map, Scope, AST};
@@ -23,6 +24,11 @@ pub fn run(
         .map_err(|e| anyhow!("rhai compile error: {e}"))?;
 
     let mut state: Map = json_to_rhai_map(state_init)?;
+
+    // `params.NombreParametro` accesible desde el script. Coerciona al
+    // tipo nativo según el kind del spec (boolean → int 1/0, number →
+    // int o float, text → string, listas → array).
+    let params_map: Map = params_to_rhai_map(&ctx.params_resolved);
 
     let cols = df.get_columns();
     let col_names: Vec<String> = cols.iter().map(|s| s.name().to_string()).collect();
@@ -53,6 +59,7 @@ pub fn run(
         scope.clear();
         scope.push("row", row);
         scope.push("state", state.clone());
+        scope.push("params", params_map.clone());
 
         let returned: Dynamic = engine
             .eval_ast_with_scope::<Dynamic>(&mut scope, &ast)
@@ -205,4 +212,56 @@ fn build_series_from_anyvalues(name: &str, values: &[AnyValue]) -> Result<Series
     };
     let s = Series::from_any_values_and_dtype(name.into(), values, &dtype, true)?;
     Ok(s)
+}
+
+/// Construye un Map rhai con los parámetros resueltos, coercionando cada
+/// valor según el `kind` del spec (boolean → int 1/0, number → i64/f64,
+/// list_number → array de i64/f64, text/list_text → string/array).
+fn params_to_rhai_map(resolved: &ResolvedParamsForScripts) -> Map {
+    let mut out: Map = Map::new();
+    for (name, value) in &resolved.values {
+        let kind = resolved.specs.get(name).map(|s| s.kind);
+        let dyn_value: Dynamic = match (kind, value) {
+            (Some(ParamKind::Boolean), ParamValue::Single(s)) => {
+                // 1 / 0 estrictos según el render SQL.
+                if s == "1" || s.eq_ignore_ascii_case("true") {
+                    1i64.into()
+                } else {
+                    0i64.into()
+                }
+            }
+            (Some(ParamKind::Number), ParamValue::Single(s)) => {
+                if let Ok(n) = s.parse::<i64>() {
+                    n.into()
+                } else if let Ok(f) = s.parse::<f64>() {
+                    f.into()
+                } else {
+                    s.clone().into()
+                }
+            }
+            (Some(ParamKind::ListNumber), ParamValue::List(items)) => {
+                let arr: Vec<Dynamic> = items
+                    .iter()
+                    .map(|v| {
+                        if let Ok(n) = v.parse::<i64>() {
+                            n.into()
+                        } else if let Ok(f) = v.parse::<f64>() {
+                            f.into()
+                        } else {
+                            v.clone().into()
+                        }
+                    })
+                    .collect();
+                arr.into()
+            }
+            (_, ParamValue::Single(s)) => s.clone().into(),
+            (_, ParamValue::List(items)) => {
+                let arr: Vec<Dynamic> =
+                    items.iter().map(|v| v.clone().into()).collect();
+                arr.into()
+            }
+        };
+        out.insert(name.as_str().into(), dyn_value);
+    }
+    out
 }

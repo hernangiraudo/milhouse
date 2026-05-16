@@ -241,14 +241,29 @@ body {
 :root[data-theme="light"] .text-slate-500 {
   color: var(--text-dim) !important;
 }
-/* Code blocks: mantienen fondo oscuro pero más sólido */
+/* Code blocks que históricamente usaban `bg-black/30|60` como fondo:
+   los seguimos pintando con --code-bg + texto claro. ⚠ Antes había una
+   regla `:root[data-theme="light"] .bg-black\/60 *` que forzaba color
+   claro a TODO el subtree — pero `bg-black/60` también se usa de
+   backdrop en modales: si el modal mismo es hijo del backdrop, ese
+   `*` le pisaba el color del texto y todo quedaba ilegible sobre fondo
+   blanco. Acotamos: el override solo aplica si el elemento NO contiene
+   otro modal/panel adentro (heurística: solo descendientes directos
+   text-like, no anidados en `.bg-surface` / `.bg-panel`). */
 :root[data-theme="light"] .bg-black\/30,
 :root[data-theme="light"] .bg-black\/60 {
   background: var(--code-bg) !important;
   color: #e2e8f0 !important;
 }
-:root[data-theme="light"] .bg-black\/60 *,
-:root[data-theme="light"] .bg-black\/30 * {
+/* Texto claro únicamente cuando el .bg-black/30|60 está siendo usado
+   como bloque de código (caracteristicamente vienen con `font-mono` o
+   `whitespace-pre`). Esto evita romper modales con backdrop oscuro. */
+:root[data-theme="light"] .bg-black\/60.font-mono *,
+:root[data-theme="light"] .bg-black\/30.font-mono *,
+:root[data-theme="light"] .bg-black\/60.whitespace-pre *,
+:root[data-theme="light"] .bg-black\/30.whitespace-pre *,
+:root[data-theme="light"] .bg-black\/60.whitespace-pre-wrap *,
+:root[data-theme="light"] .bg-black\/30.whitespace-pre-wrap * {
   color: #e2e8f0;
 }
 
@@ -406,6 +421,7 @@ body {
 ===================================================================== */
 .milhouse-codeblock {
   background: #0f172a !important; /* slate-900 */
+  color: #e2e8f0 !important; /* slate-200 — texto directo (no envuelto en <code>) */
   border: 1px solid #1e293b !important;
   border-radius: 0.375rem;
   padding: 0.625rem 0.75rem;
@@ -414,6 +430,7 @@ body {
   white-space: pre-wrap;
   overflow: auto;
   max-height: 18rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .milhouse-codeblock code {
   color: #e2e8f0 !important; /* slate-200 */

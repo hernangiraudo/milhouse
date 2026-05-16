@@ -73,9 +73,9 @@ export function MilhouseAIDialog({
         style={{ boxShadow: "var(--shadow)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-lg font-bold flex items-center gap-2">
+        <h3 className="text-lg font-bold flex items-center gap-2 text-app">
           ✨ Milhouse-AI
-          <span className="text-xs font-normal text-dim">
+          <span className="text-xs font-normal text-muted">
             usa Claude para construir un paso a partir de una descripción
           </span>
         </h3>

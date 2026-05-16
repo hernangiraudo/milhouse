@@ -37,6 +37,7 @@ export type ParamKind =
   | "date"
   | "number"
   | "text"
+  | "boolean"
   | "list_number"
   | "list_text";
 
@@ -79,6 +80,11 @@ type ProjectShape = {
   steps: Step[];
   parameters?: ParamSpec[];
   presets?: ParamPreset[];
+  /** Nombres de parámetros globales que aplican a este proyecto.
+   *  Solo los listados se mergean al ejecutar. */
+  selected_global_params?: string[];
+  /** Respuestas por default que pre-rellenan el prompt de ejecución. */
+  run_defaults?: Record<string, ParamValueJson>;
   api?: ProjectApiConfig;
   settings?: ProjectSettings;
   duckdb_path?: string | null;
@@ -151,6 +157,9 @@ export function DesignEditor({
   const [execTab, setExecTab] = useState<"logs" | "sample">("logs");
   // "Propiedades del proyecto": grupos / parámetros / API. Colapsable.
   const [propsOpen, setPropsOpen] = useState(false);
+  // Panel "Respuestas / propiedades de ejecución": editor de defaults de
+  // los parámetros del proyecto (locales + globales seleccionados).
+  const [runDefaultsOpen, setRunDefaultsOpen] = useState(false);
   // Vista del lienzo: "nodes" (solo pasos) | "nodes_and_tables" (pasos +
   // ícono de tabla a la salida de cada uno).
   const [canvasView, setCanvasView] = useState<"nodes" | "nodes_and_tables">(
@@ -171,14 +180,22 @@ export function DesignEditor({
   const [globalParams, setGlobalParams] = useState<{
     parameters: ParamSpec[];
     presets: ParamPreset[];
-  }>({ parameters: [], presets: [] });
+    preset_groups: Array<{
+      name: string;
+      description?: string | null;
+      preset_names: string[];
+    }>;
+  }>({ parameters: [], presets: [], preset_groups: [] });
   useEffect(() => {
     fetch(`${API_BASE}/api/parameters`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : { parameters: [], presets: [] }))
+      .then((r) =>
+        r.ok ? r.json() : { parameters: [], presets: [], preset_groups: [] },
+      )
       .then((j) =>
         setGlobalParams({
           parameters: j.parameters ?? [],
           presets: j.presets ?? [],
+          preset_groups: j.preset_groups ?? [],
         }),
       )
       .catch(() => {});
@@ -847,14 +864,19 @@ export function DesignEditor({
       return;
     }
 
-    // ¿El proyecto declara (o hereda de globales) parámetros usados por
-    // los steps a ejecutar? Mergeamos local + global (local pisa por
-    // nombre — mismo criterio que el backend).
+    // ¿El proyecto declara (o hereda de globales SELECCIONADOS)
+    // parámetros usados por los steps a ejecutar? Mergeamos local +
+    // globales-elegidos (local pisa por nombre — mismo criterio que el
+    // backend). Solo los globales que el proyecto opt-in en
+    // selected_global_params aplican.
     const localParams = cfg.parameters ?? [];
     const localNames = new Set(localParams.map((p) => p.name));
+    const selectedGlobals = new Set(cfg.selected_global_params ?? []);
     const mergedParams: ParamSpec[] = [
       ...localParams,
-      ...globalParams.parameters.filter((g) => !localNames.has(g.name)),
+      ...globalParams.parameters.filter(
+        (g) => selectedGlobals.has(g.name) && !localNames.has(g.name),
+      ),
     ];
     const usedParamNames = new Set<string>();
     if (mergedParams.length > 0) {
@@ -1632,6 +1654,74 @@ export function DesignEditor({
                   })
                 }
               />
+
+              {/* Globales que aplican a este proyecto */}
+              <div className="mt-4 bg-surface-2 border border-surface rounded p-3">
+                <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+                  Aplicar parámetros globales (
+                  {(cfg.selected_global_params ?? []).length} /{" "}
+                  {globalParams.parameters.length})
+                </h4>
+                <p className="text-[11px] text-dim mb-2">
+                  Tildá los globales que este proyecto necesita.{" "}
+                  <em>Solo los seleccionados</em> se mergean al ejecutar. Si
+                  un global se llama igual que un local, el local pisa al
+                  global.
+                </p>
+                {globalParams.parameters.length === 0 ? (
+                  <div className="text-xs text-dim">
+                    No hay parámetros globales declarados.{" "}
+                    <em>(Se definen en la sección "Parámetros de Ejecución".)</em>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                    {globalParams.parameters.map((g) => {
+                      const list = cfg.selected_global_params ?? [];
+                      const checked = list.includes(g.name);
+                      const localCollision = (cfg.parameters ?? []).some(
+                        (p) => p.name === g.name,
+                      );
+                      return (
+                        <label
+                          key={g.name}
+                          className="flex items-center gap-2 text-sm cursor-pointer text-app"
+                          title={g.description ?? ""}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              const cur = cfg.selected_global_params ?? [];
+                              const next = checked
+                                ? cur.filter((n) => n !== g.name)
+                                : [...cur, g.name];
+                              applyChange({
+                                ...cfg,
+                                selected_global_params: next,
+                              });
+                            }}
+                          />
+                          <code className="font-mono text-xs">{g.name}</code>
+                          <span className="text-[10px] text-dim">{g.kind}</span>
+                          {g.label && (
+                            <span className="text-[10px] text-dim truncate">
+                              — {g.label}
+                            </span>
+                          )}
+                          {localCollision && (
+                            <span
+                              className="text-[10px] px-1 rounded bg-amber-500/20 text-amber-300 border border-amber-700"
+                              title="Hay un parámetro local con el mismo nombre — el local pisa al global"
+                            >
+                              pisado por local
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Exposición como API REST */}
@@ -1645,11 +1735,26 @@ export function DesignEditor({
         )}
       </div>
 
+      {/* Respuestas del proyecto (defaults para el prompt de ejecución) */}
+      <RunDefaultsPanel
+        open={runDefaultsOpen}
+        onToggle={() => setRunDefaultsOpen(!runDefaultsOpen)}
+        localParams={cfg.parameters ?? []}
+        globalParams={globalParams.parameters}
+        selectedGlobals={cfg.selected_global_params ?? []}
+        runDefaults={cfg.run_defaults ?? {}}
+        onChange={(next) =>
+          applyChange({ ...cfg, run_defaults: next })
+        }
+      />
+
       {paramPrompt && (
         <ParameterPromptDialog
           parameters={paramPrompt.params}
           presets={mergedPresetsForPrompt(cfg.presets ?? [], globalParams.presets)}
+          presetGroups={globalParams.preset_groups}
           defaultRunName={paramPrompt.defaultRunName}
+          initialValues={cfg.run_defaults ?? {}}
           onCancel={() => setParamPrompt(null)}
           onResolved={async (args) => {
             const cb = paramPrompt.onResolved;
@@ -1931,4 +2036,217 @@ function createsCycle(steps: Step[], from: string, to: string): boolean {
     return false;
   }
   return reaches(from, to);
+}
+
+/**
+ * Panel "Respuestas del proyecto": editor de valores por default para
+ * cada parámetro disponible (locales + globales seleccionados). Estos
+ * defaults pre-rellenan el prompt al ejecutar; el usuario puede
+ * sobreescribirlos antes de lanzar.
+ */
+function RunDefaultsPanel({
+  open,
+  onToggle,
+  localParams,
+  globalParams,
+  selectedGlobals,
+  runDefaults,
+  onChange,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  localParams: ParamSpec[];
+  globalParams: ParamSpec[];
+  selectedGlobals: string[];
+  runDefaults: Record<string, ParamValueJson>;
+  onChange: (next: Record<string, ParamValueJson>) => void;
+}) {
+  // Lista efectiva de parámetros que aplican: locales + globales seleccionados.
+  // Local pisa global por nombre (mismo criterio que el backend).
+  const localNames = new Set(localParams.map((p) => p.name));
+  const available: Array<ParamSpec & { source: "local" | "global" }> = [
+    ...localParams.map((p) => ({ ...p, source: "local" as const })),
+    ...globalParams
+      .filter(
+        (g) => selectedGlobals.includes(g.name) && !localNames.has(g.name),
+      )
+      .map((g) => ({ ...g, source: "global" as const })),
+  ];
+
+  function setVal(name: string, v: ParamValueJson | null) {
+    const next = { ...runDefaults };
+    if (v == null) {
+      delete next[name];
+    } else {
+      next[name] = v;
+    }
+    onChange(next);
+  }
+
+  const answered = available.filter((p) => p.name in runDefaults).length;
+
+  return (
+    <div className="bg-panel border border-surface rounded-xl">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+      >
+        <div>
+          <h3 className="font-semibold">Propiedades de ejecución</h3>
+          <p className="text-xs text-muted">
+            Respuestas por default a los parámetros del proyecto (locales y
+            globales seleccionados). Pre-rellenan el prompt al ejecutar; el
+            usuario puede confirmarlas o cambiarlas.{" "}
+            {available.length > 0 && (
+              <strong>
+                {answered} / {available.length} respondidos
+              </strong>
+            )}
+          </p>
+        </div>
+        <span className="text-dim">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-surface p-3">
+          {available.length === 0 ? (
+            <div className="text-sm text-dim">
+              Este proyecto no tiene parámetros locales ni globales
+              seleccionados. Agregalos en "Propiedades del proyecto".
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-muted text-[10px] uppercase tracking-wider">
+                  <th className="text-left px-2 py-1 font-medium">Parámetro</th>
+                  <th className="text-left px-2 py-1 font-medium">Tipo</th>
+                  <th className="text-left px-2 py-1 font-medium">Origen</th>
+                  <th className="text-left px-2 py-1 font-medium">
+                    Respuesta por default
+                  </th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {available.map((p) => {
+                  const v = runDefaults[p.name];
+                  return (
+                    <tr key={p.name} className="border-t border-surface">
+                      <td className="px-2 py-1.5">
+                        <code className="font-mono text-xs">{p.name}</code>
+                        {p.label && (
+                          <div className="text-[10px] text-dim">{p.label}</div>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5 text-[11px] text-dim">
+                        {p.kind}
+                      </td>
+                      <td className="px-2 py-1.5 text-[11px]">
+                        {p.source === "local" ? (
+                          <span className="text-cyan-300">local</span>
+                        ) : (
+                          <span className="text-emerald-300">global</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <RunDefaultEditor
+                          param={p}
+                          value={v}
+                          onChange={(next) => setVal(p.name, next)}
+                        />
+                      </td>
+                      <td className="px-2 py-1.5 text-right">
+                        {p.name in runDefaults && (
+                          <button
+                            type="button"
+                            onClick={() => setVal(p.name, null)}
+                            className="text-xs text-dim hover:text-app"
+                            title="Quitar respuesta default"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RunDefaultEditor({
+  param,
+  value,
+  onChange,
+}: {
+  param: ParamSpec;
+  value: ParamValueJson | undefined;
+  onChange: (v: ParamValueJson | null) => void;
+}) {
+  const k = param.kind;
+  const list = k === "list_number" || k === "list_text";
+  if (k === "date") {
+    return (
+      <input
+        type="date"
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="milhouse-field text-sm w-full"
+      />
+    );
+  }
+  if (k === "number") {
+    return (
+      <input
+        type="number"
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="milhouse-field text-sm w-full font-mono"
+      />
+    );
+  }
+  if (k === "text") {
+    return (
+      <input
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="milhouse-field text-sm w-full"
+      />
+    );
+  }
+  if (k === "boolean") {
+    return (
+      <select
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="milhouse-field text-sm w-full"
+      >
+        <option value="">(sin respuesta)</option>
+        <option value="1">Sí</option>
+        <option value="0">No</option>
+      </select>
+    );
+  }
+  if (list) {
+    return (
+      <textarea
+        value={Array.isArray(value) ? value.join("\n") : ""}
+        onChange={(e) => {
+          const arr = e.target.value
+            .split(/[\n,;]+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          onChange(arr.length === 0 ? null : arr);
+        }}
+        rows={2}
+        placeholder="Un valor por línea"
+        className="milhouse-field text-xs w-full font-mono"
+      />
+    );
+  }
+  return null;
 }

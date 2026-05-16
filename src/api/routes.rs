@@ -531,18 +531,27 @@ pub async fn create_job(
         }
     }
 
-    // Merge de parámetros y respuestas globales con los locales del config.
-    // Regla: local pisa global por nombre. El scheduler ve la lista
-    // mergeada vía `cfg.parameters`, así el motor conoce el kind de cada
-    // parámetro al sustituir `:nombre`.
+    // Merge selectivo: sólo mergeamos los parámetros globales que el
+    // proyecto explícitamente seleccionó en `selected_global_params`.
+    // Local pisa global por nombre (si por error coinciden, gana el local).
+    // Los presets globales son útiles cualquiera sea el caso, así que se
+    // siguen sumando completos.
     {
         let globals = state.global_params.read().await.clone();
+        let selected: std::collections::HashSet<String> = cfg
+            .selected_global_params
+            .iter()
+            .cloned()
+            .collect();
         let local_names: std::collections::HashSet<String> = cfg
             .parameters
             .iter()
             .map(|p| p.name.clone())
             .collect();
         for g in &globals.parameters {
+            if !selected.contains(&g.name) {
+                continue;
+            }
             if !local_names.contains(&g.name) {
                 cfg.parameters.push(g.clone());
             }
@@ -555,6 +564,21 @@ pub async fn create_job(
             }
         }
     }
+
+    // Aplicar `run_defaults` del proyecto como fallback: si el request
+    // del front no trae valor para un parámetro pero el proyecto tiene
+    // default guardado, se usa el default. El request sigue ganando si
+    // trae valor (el usuario pudo haber sobreescrito en el prompt).
+    let req_parameters_with_defaults: std::collections::HashMap<
+        String,
+        crate::config::ParamValue,
+    > = {
+        let mut out = req.parameters.clone();
+        for (name, value) in &cfg.run_defaults {
+            out.entry(name.clone()).or_insert_with(|| value.clone());
+        }
+        out
+    };
 
     // Validación: si algún step que se va a ejecutar referencia `:param` y
     // ese parámetro no tiene valor en `req.parameters`, abortar con error
@@ -594,7 +618,7 @@ pub async fn create_job(
                 .collect();
             for t in texts {
                 for name in scan_param_refs(t) {
-                    if req.parameters.contains_key(&name) {
+                    if req_parameters_with_defaults.contains_key(&name) {
                         continue;
                     }
                     if constants_set.contains(&name) {
@@ -653,7 +677,7 @@ pub async fn create_job(
             .map(|v| v.iter().cloned().collect()),
         stop_on_failure: req.stop_on_failure,
         use_preload: req.use_preload,
-        params: req.parameters.clone(),
+        params: req_parameters_with_defaults,
         constants,
         run_name: req.run_name.clone(),
     };

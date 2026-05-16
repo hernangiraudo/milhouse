@@ -26,6 +26,22 @@ pub struct GlobalParamsFile {
     pub parameters: Vec<ParamSpec>,
     #[serde(default)]
     pub presets: Vec<ParamPreset>,
+    /// Grupos de respuestas: combinaciones nombradas de presets que el
+    /// usuario aplica de una sola vez al ejecutar. Ej: el grupo
+    /// "Cierre trimestral" agrupa los presets "Year to date" + "Comitente
+    /// estándar". Solo viven a nivel global.
+    #[serde(default)]
+    pub preset_groups: Vec<PresetGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresetGroup {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Nombres de presets que componen el grupo. Se aplican en orden;
+    /// el último gana en caso de conflicto de parámetros.
+    pub preset_names: Vec<String>,
 }
 
 impl GlobalParamsFile {
