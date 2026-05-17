@@ -1872,7 +1872,18 @@ fn default_true() -> bool {
 pub async fn list_schedules(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let store = run_store_or_503(&state).await?;
+    // Si la DB de runs no está disponible (conexión `runs` no
+    // configurada o archivo lockeado), devolvemos lista vacía en vez
+    // de 503 — no podés tener schedules sin esa DB, así que la
+    // respuesta correcta es "no hay schedules". Sigue siendo posible
+    // crear configs, ver Diseño, etc.
+    let store_opt: Option<std::sync::Arc<crate::runs::RunStore>> = {
+        let guard = state.run_store.read().await;
+        guard.clone()
+    };
+    let Some(store) = store_opt else {
+        return Ok(Json(json!({ "schedules": [] })));
+    };
     let schedules = store
         .all_schedules()
         .await

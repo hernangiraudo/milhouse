@@ -166,15 +166,28 @@ export function SchedulesPanel() {
   } | null>(null);
 
   async function reload() {
-    try {
-      const [s, c] = await Promise.all([listSchedules(), listConfigs()]);
-      setList(s);
-      setConfigs(c);
-      if (!configName && c.length > 0) setConfigName(c[0].name);
-      setErr(null);
-    } catch (e) {
-      setErr(String(e));
+    // allSettled: si uno falla, el otro igual carga. Antes con
+    // Promise.all, un 503 en listSchedules dejaba `configs` vacío y la
+    // UI mostraba "no hay proyectos" aunque sí hubiera.
+    const [schedulesRes, configsRes] = await Promise.allSettled([
+      listSchedules(),
+      listConfigs(),
+    ]);
+    const errs: string[] = [];
+    if (schedulesRes.status === "fulfilled") {
+      setList(schedulesRes.value);
+    } else {
+      errs.push(`listSchedules: ${schedulesRes.reason}`);
     }
+    if (configsRes.status === "fulfilled") {
+      setConfigs(configsRes.value);
+      if (!configName && configsRes.value.length > 0) {
+        setConfigName(configsRes.value[0].name);
+      }
+    } else {
+      errs.push(`listConfigs: ${configsRes.reason}`);
+    }
+    setErr(errs.length > 0 ? errs.join(" · ") : null);
   }
   useEffect(() => {
     reload();
