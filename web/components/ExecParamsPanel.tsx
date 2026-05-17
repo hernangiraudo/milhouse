@@ -70,7 +70,7 @@ export function ExecParamsPanel() {
         <div>
           <h2 className="font-semibold text-lg">Parámetros de Ejecución</h2>
           <p className="text-sm text-muted">
-            Parámetros y respuestas guardadas <strong>globales</strong>
+            Parámetros y respuestas guardadas <strong>globales</strong>{" "}
             compartidas entre todos los proyectos. Cada proyecto puede
             agregar los suyos en su sección Diseño · Propiedades; en caso de
             colisión por nombre, el del proyecto pisa al global.
