@@ -81,10 +81,14 @@ export function ParametersPanel({
   const [collapsedCategories, setCollapsedCategories] = useState<
     Set<ParamCategory>
   >(new Set());
-  // Switch para mostrar/ocultar el selector de "kind" en cada fila.
-  // Default off: pocos usuarios necesitan cambiar el tipo después de
-  // crear el param. Cuando alguien quiera, lo prende.
+  // Switch para mostrar/ocultar el selector de "kind" (tipo de dato)
+  // en cada fila. Default off — pocos usuarios necesitan cambiar el
+  // tipo después de crear el param.
   const [showKindEditor, setShowKindEditor] = useState(false);
+  // Switch separado para el selector de "categoría" (Fechas, Comitentes,
+  // Abreviaturas, Ejecución, Otros). Default off para mantener la fila
+  // limpia; el usuario lo prende para reclasificar parámetros.
+  const [showCategoryEditor, setShowCategoryEditor] = useState(false);
   const [expandedGroup, setExpandedGroup] = useState<number | null>(null);
   const showGroupsTab = presetGroups != null && onChangeGroups != null;
 
@@ -337,14 +341,25 @@ export function ParametersPanel({
             <div className="flex items-center gap-3">
               <label
                 className="flex items-center gap-1.5 text-[11px] text-dim cursor-pointer select-none"
-                title="Mostrar el selector de tipo (Fecha/Número/Texto/Sí-No) en cada fila"
+                title="Mostrar el selector de tipo de dato (Fecha/Número/Texto/Sí-No) en cada fila"
               >
                 <input
                   type="checkbox"
                   checked={showKindEditor}
                   onChange={(e) => setShowKindEditor(e.target.checked)}
                 />
-                <span>Mostrar tipo</span>
+                <span>Tipo de Datos</span>
+              </label>
+              <label
+                className="flex items-center gap-1.5 text-[11px] text-dim cursor-pointer select-none"
+                title="Mostrar el selector de categoría (Fechas/Comitentes/Abreviaturas/Ejecución/Otros) en cada fila"
+              >
+                <input
+                  type="checkbox"
+                  checked={showCategoryEditor}
+                  onChange={(e) => setShowCategoryEditor(e.target.checked)}
+                />
+                <span>Tipo de Parámetro</span>
               </label>
               <button
                 onClick={addParam}
@@ -424,9 +439,11 @@ export function ParametersPanel({
                           >
                             <div
                               className={`grid gap-2 items-center ${
-                                showKindEditor
+                                showKindEditor && showCategoryEditor
                                   ? "grid-cols-[1fr_120px_120px_2fr_30px]"
-                                  : "grid-cols-[1fr_120px_2fr_30px]"
+                                  : showKindEditor || showCategoryEditor
+                                    ? "grid-cols-[1fr_120px_2fr_30px]"
+                                    : "grid-cols-[1fr_2fr_30px]"
                               }`}
                             >
                               <input
@@ -462,22 +479,24 @@ export function ParametersPanel({
                                   )}
                                 </select>
                               )}
-                              <select
-                                value={getCategory(p)}
-                                onChange={(e) =>
-                                  updateParam(idx, {
-                                    category: e.target.value as ParamCategory,
-                                  })
-                                }
-                                className="milhouse-field text-sm"
-                                title="Categoría visual (agrupa el parámetro en la UI)"
-                              >
-                                {CATEGORY_ORDER.map((c) => (
-                                  <option key={c} value={c}>
-                                    {CATEGORY_LABEL[c]}
-                                  </option>
-                                ))}
-                              </select>
+                              {showCategoryEditor && (
+                                <select
+                                  value={getCategory(p)}
+                                  onChange={(e) =>
+                                    updateParam(idx, {
+                                      category: e.target.value as ParamCategory,
+                                    })
+                                  }
+                                  className="milhouse-field text-sm"
+                                  title="Categoría visual (agrupa el parámetro en la UI)"
+                                >
+                                  {CATEGORY_ORDER.map((c) => (
+                                    <option key={c} value={c}>
+                                      {CATEGORY_LABEL[c]}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
                               <input
                                 value={p.label ?? ""}
                                 onChange={(e) =>
