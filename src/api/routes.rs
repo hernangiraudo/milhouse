@@ -581,6 +581,34 @@ pub async fn create_job(
         for (name, value) in &cfg.run_defaults {
             out.entry(name.clone()).or_insert_with(|| value.clone());
         }
+        // Grupos de respuestas seleccionados para este proyecto: aplican
+        // sus presets en orden, sumando valores como fallback (no pisan
+        // request ni run_defaults — son nivel 3 en la cadena).
+        {
+            let globals = state.global_params.read().await.clone();
+            for group_name in &cfg.selected_preset_groups {
+                let Some(group) = globals
+                    .preset_groups
+                    .iter()
+                    .find(|g| &g.name == group_name)
+                else {
+                    continue;
+                };
+                for preset_name in &group.preset_names {
+                    let preset_pool = cfg
+                        .presets
+                        .iter()
+                        .find(|p| &p.name == preset_name)
+                        .or_else(|| {
+                            globals.presets.iter().find(|p| &p.name == preset_name)
+                        });
+                    let Some(pr) = preset_pool else { continue };
+                    for (k, v) in &pr.values {
+                        out.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+        }
         for p in &cfg.parameters {
             if let Some(def) = &p.default {
                 out.entry(p.name.clone()).or_insert_with(|| def.clone());
@@ -588,6 +616,39 @@ pub async fn create_job(
         }
         out
     };
+
+    // Validación: parámetros marcados como REQUIRED en el proyecto deben
+    // tener valor después de aplicar toda la cadena de fallbacks. Si no,
+    // rechazamos con error claro listando los faltantes.
+    {
+        let missing_required: Vec<String> = cfg
+            .param_requirements
+            .iter()
+            .filter(|(_, r)| matches!(r, crate::config::ParamRequirement::Required))
+            .filter(|(name, _)| {
+                let val = req_parameters_with_defaults.get(*name);
+                match val {
+                    None => true,
+                    Some(crate::config::ParamValue::Single(s)) => s.trim().is_empty(),
+                    Some(crate::config::ParamValue::List(items)) => items.is_empty(),
+                }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if !missing_required.is_empty() {
+            let mut names = missing_required;
+            names.sort();
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "los siguientes parámetros obligatorios no fueron respondidos: {}. \
+                     Respondelos en el prompt, agregá un default en la definición del \
+                     parámetro o en las respuestas del proyecto.",
+                    names.join(", ")
+                ),
+            ));
+        }
+    }
 
     // Validación: si algún step que se va a ejecutar referencia `:param` y
     // ese parámetro no tiene valor en `req.parameters`, abortar con error
@@ -617,14 +678,15 @@ pub async fn create_job(
                 _ => continue,
             };
             // Constantes globales conocidas (resueltas por full_name).
-            let constants_set: std::collections::HashSet<String> = state
-                .global_constants
-                .read()
-                .await
-                .constants
-                .iter()
-                .map(|c| c.full_name())
-                .collect();
+            // Incluye built-ins (Fecha.Today, Fecha.Yesterday, etc).
+            let constants_set: std::collections::HashSet<String> = {
+                let user_constants =
+                    state.global_constants.read().await.constants.clone();
+                crate::config::merge_with_builtins(&user_constants)
+                    .into_iter()
+                    .map(|c| c.full_name())
+                    .collect()
+            };
             for t in texts {
                 for name in scan_param_refs(t) {
                     if req_parameters_with_defaults.contains_key(&name) {
@@ -678,7 +740,10 @@ pub async fn create_job(
     // sacamos para reemplazarlo con el nuevo handle.
     state.jobs.remove(&job_id);
     // Constantes globales a inyectar (snapshot del momento de lanzar).
-    let constants = state.global_constants.read().await.constants.clone();
+    let constants = {
+        let user_constants = state.global_constants.read().await.constants.clone();
+        crate::config::merge_with_builtins(&user_constants)
+    };
     let options = crate::orchestrator::scheduler::JobOptions {
         target_steps: req
             .target_steps

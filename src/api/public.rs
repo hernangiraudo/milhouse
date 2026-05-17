@@ -85,12 +85,35 @@ pub async fn run_project(
         }
     }
 
-    // Cadena de fallbacks: request > run_defaults del proyecto >
-    // ParamSpec.default. Mismo orden que en `/api/jobs`.
+    // Cadena de fallbacks: request > run_defaults > grupos de respuestas
+    // del proyecto > ParamSpec.default. Mismo orden que en `/api/jobs`.
     for (name, value) in &cfg.run_defaults {
         parameters
             .entry(name.clone())
             .or_insert_with(|| value.clone());
+    }
+    {
+        let globals = state.global_params.read().await.clone();
+        for group_name in &cfg.selected_preset_groups {
+            let Some(group) = globals
+                .preset_groups
+                .iter()
+                .find(|g| &g.name == group_name)
+            else {
+                continue;
+            };
+            for preset_name in &group.preset_names {
+                let preset_pool = cfg
+                    .presets
+                    .iter()
+                    .find(|p| &p.name == preset_name)
+                    .or_else(|| globals.presets.iter().find(|p| &p.name == preset_name));
+                let Some(pr) = preset_pool else { continue };
+                for (k, v) in &pr.values {
+                    parameters.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+        }
     }
     for p in &cfg.parameters {
         if let Some(def) = &p.default {
@@ -100,9 +123,47 @@ pub async fn run_project(
         }
     }
 
-    // Validar que cualquier :param referenciado tenga valor (mismo check
-    // que /api/jobs).
+    // Validación: parámetros REQUIRED del proyecto.
     {
+        let missing_required: Vec<String> = cfg
+            .param_requirements
+            .iter()
+            .filter(|(_, r)| matches!(r, crate::config::ParamRequirement::Required))
+            .filter(|(name, _)| {
+                let val = parameters.get(*name);
+                match val {
+                    None => true,
+                    Some(crate::config::ParamValue::Single(s)) => s.trim().is_empty(),
+                    Some(crate::config::ParamValue::List(items)) => items.is_empty(),
+                }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if !missing_required.is_empty() {
+            let mut names = missing_required;
+            names.sort();
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "parámetros obligatorios sin valor: {}",
+                    names.join(", ")
+                ),
+            ));
+        }
+    }
+
+    // Validar que cualquier :param referenciado tenga valor (mismo check
+    // que /api/jobs). Las constantes (incluidas built-ins) no son
+    // params faltantes.
+    {
+        let constants_set: std::collections::HashSet<String> = {
+            let user_constants =
+                state.global_constants.read().await.constants.clone();
+            crate::config::merge_with_builtins(&user_constants)
+                .into_iter()
+                .map(|c| c.full_name())
+                .collect()
+        };
         let mut missing: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
         for s in &cfg.steps {
@@ -116,9 +177,13 @@ pub async fn run_project(
             };
             for t in texts {
                 for name in crate::api::routes::scan_param_refs(t) {
-                    if !parameters.contains_key(&name) {
-                        missing.insert(name);
+                    if parameters.contains_key(&name) {
+                        continue;
                     }
+                    if constants_set.contains(&name) {
+                        continue;
+                    }
+                    missing.insert(name);
                 }
             }
         }
@@ -162,7 +227,10 @@ pub async fn run_project(
 
     let job_id = Uuid::new_v4().to_string();
     let run_store = state.run_store.read().await.clone();
-    let constants = state.global_constants.read().await.constants.clone();
+    let constants = {
+        let user_constants = state.global_constants.read().await.constants.clone();
+        crate::config::merge_with_builtins(&user_constants)
+    };
     let options = crate::orchestrator::scheduler::JobOptions {
         target_steps: None,
         stop_on_failure: true,

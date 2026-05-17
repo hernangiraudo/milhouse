@@ -129,3 +129,104 @@ impl GlobalConstantsFile {
             .collect()
     }
 }
+
+/// Constantes built-in que se inyectan automáticamente al ejecutar
+/// cualquier job. Se evalúan al inicio del job (no son fechas vivas que
+/// cambian durante la ejecución — el primer paso y el último ven el
+/// mismo valor, lo cual es lo razonable para reproducibilidad).
+///
+/// Si el usuario declara una constante con el mismo `full_name`, la suya
+/// gana (estas son fallback). Esa lógica vive en el caller que mergea
+/// `builtin_constants()` con el archivo de usuario.
+pub fn builtin_constants() -> Vec<ConstantSpec> {
+    use chrono::{Datelike, Utc};
+    let today = Utc::now().date_naive();
+    let yesterday = today.pred_opt().unwrap_or(today);
+    let tomorrow = today.succ_opt().unwrap_or(today);
+    let som = chrono::NaiveDate::from_ymd_opt(today.year(), today.month(), 1)
+        .unwrap_or(today);
+    let eom = {
+        let (y, m) = if today.month() == 12 {
+            (today.year() + 1, 1)
+        } else {
+            (today.year(), today.month() + 1)
+        };
+        chrono::NaiveDate::from_ymd_opt(y, m, 1)
+            .and_then(|d| d.pred_opt())
+            .unwrap_or(today)
+    };
+
+    let to_iso = |d: chrono::NaiveDate| d.format("%Y-%m-%d").to_string();
+
+    fn c(name: &str, group: &str, value: String, desc: &str) -> ConstantSpec {
+        ConstantSpec {
+            name: name.to_string(),
+            group: Some(group.to_string()),
+            kind: ConstantKind::Text,
+            value,
+            description: Some(desc.to_string()),
+        }
+    }
+    vec![
+        c(
+            "Today",
+            "Fecha",
+            to_iso(today),
+            "Fecha actual al momento de lanzar el job (formato YYYY-MM-DD)",
+        ),
+        c(
+            "Yesterday",
+            "Fecha",
+            to_iso(yesterday),
+            "Día anterior a hoy",
+        ),
+        c(
+            "Tomorrow",
+            "Fecha",
+            to_iso(tomorrow),
+            "Día siguiente a hoy",
+        ),
+        c(
+            "StartOfMonth",
+            "Fecha",
+            to_iso(som),
+            "Primer día del mes actual",
+        ),
+        c(
+            "EndOfMonth",
+            "Fecha",
+            to_iso(eom),
+            "Último día del mes actual",
+        ),
+        c(
+            "StartOfYear",
+            "Fecha",
+            chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1)
+                .map(to_iso)
+                .unwrap_or_default(),
+            "Primer día del año actual",
+        ),
+        c(
+            "EndOfYear",
+            "Fecha",
+            chrono::NaiveDate::from_ymd_opt(today.year(), 12, 31)
+                .map(to_iso)
+                .unwrap_or_default(),
+            "Último día del año actual",
+        ),
+    ]
+}
+
+/// Mergea las built-in con las del archivo de usuario. Si el usuario
+/// declaró una constante con el mismo `full_name`, la suya gana.
+pub fn merge_with_builtins(user_constants: &[ConstantSpec]) -> Vec<ConstantSpec> {
+    let user_names: std::collections::HashSet<String> =
+        user_constants.iter().map(|c| c.full_name()).collect();
+    let mut out: Vec<ConstantSpec> = user_constants.to_vec();
+    for b in builtin_constants() {
+        if !user_names.contains(&b.full_name()) {
+            out.push(b);
+        }
+    }
+    out
+}

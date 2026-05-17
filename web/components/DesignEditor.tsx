@@ -88,8 +88,15 @@ type ProjectShape = {
   /** Nombres de parámetros globales que aplican a este proyecto.
    *  Solo los listados se mergean al ejecutar. */
   selected_global_params?: string[];
+  /** Requirement por parámetro (local o global seleccionado). Default
+   *  cuando no aparece: "optional". Marcar "required" hace que el job
+   *  no se pueda lanzar si el parámetro no tiene valor. */
+  param_requirements?: Record<string, "optional" | "required">;
   /** Respuestas por default que pre-rellenan el prompt de ejecución. */
   run_defaults?: Record<string, ParamValueJson>;
+  /** Grupos de respuestas que aplican siempre al ejecutar este proyecto.
+   *  Sus valores se mergean a run_defaults en runtime. */
+  selected_preset_groups?: string[];
   api?: ProjectApiConfig;
   settings?: ProjectSettings;
   duckdb_path?: string | null;
@@ -1660,18 +1667,18 @@ export function DesignEditor({
                 }
               />
 
-              {/* Globales que aplican a este proyecto */}
+              {/* Globales — requirement por proyecto */}
               <div className="mt-4 bg-surface-2 border border-surface rounded p-3">
                 <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
-                  Aplicar parámetros globales (
-                  {(cfg.selected_global_params ?? []).length} /{" "}
-                  {globalParams.parameters.length})
+                  Parámetros globales — aplicación al proyecto
                 </h4>
                 <p className="text-[11px] text-dim mb-2">
-                  Tildá los globales que este proyecto necesita.{" "}
-                  <em>Solo los seleccionados</em> se mergean al ejecutar. Si
-                  un global se llama igual que un local, el local pisa al
-                  global.
+                  Por cada global, elegí cómo aplica:{" "}
+                  <strong>no aplica</strong> (no se mergea —{" "}
+                  <em>default</em>),
+                  <strong> opcional</strong> (se mergea, puede quedar sin
+                  responder) o <strong>obligatorio</strong> (si no hay
+                  valor al ejecutar, el job se rechaza).
                 </p>
                 {globalParams.parameters.length === 0 ? (
                   <div className="text-xs text-dim">
@@ -1679,35 +1686,72 @@ export function DesignEditor({
                     <em>(Se definen en la sección "Parámetros de Ejecución".)</em>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                  <div className="space-y-1">
                     {globalParams.parameters.map((g) => {
-                      const list = cfg.selected_global_params ?? [];
-                      const checked = list.includes(g.name);
+                      const selected = (
+                        cfg.selected_global_params ?? []
+                      ).includes(g.name);
+                      const req =
+                        (cfg.param_requirements ?? {})[g.name] ??
+                        "optional";
+                      const value: "none" | "optional" | "required" = !selected
+                        ? "none"
+                        : req;
                       const localCollision = (cfg.parameters ?? []).some(
                         (p) => p.name === g.name,
                       );
                       return (
-                        <label
+                        <div
                           key={g.name}
-                          className="flex items-center gap-2 text-sm cursor-pointer text-app"
+                          className="flex items-center gap-2 text-sm text-app"
                           title={g.description ?? ""}
                         >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              const cur = cfg.selected_global_params ?? [];
-                              const next = checked
-                                ? cur.filter((n) => n !== g.name)
-                                : [...cur, g.name];
-                              applyChange({
-                                ...cfg,
-                                selected_global_params: next,
-                              });
+                          <select
+                            value={value}
+                            onChange={(e) => {
+                              const next = e.target.value as
+                                | "none"
+                                | "optional"
+                                | "required";
+                              const curSelected =
+                                cfg.selected_global_params ?? [];
+                              const curReq = {
+                                ...(cfg.param_requirements ?? {}),
+                              };
+                              if (next === "none") {
+                                applyChange({
+                                  ...cfg,
+                                  selected_global_params: curSelected.filter(
+                                    (n) => n !== g.name,
+                                  ),
+                                  param_requirements: Object.fromEntries(
+                                    Object.entries(curReq).filter(
+                                      ([k]) => k !== g.name,
+                                    ),
+                                  ),
+                                });
+                              } else {
+                                const newSelected = curSelected.includes(g.name)
+                                  ? curSelected
+                                  : [...curSelected, g.name];
+                                curReq[g.name] = next;
+                                applyChange({
+                                  ...cfg,
+                                  selected_global_params: newSelected,
+                                  param_requirements: curReq,
+                                });
+                              }
                             }}
-                          />
+                            className="milhouse-field text-xs py-0.5 w-32"
+                          >
+                            <option value="none">— no aplica</option>
+                            <option value="optional">opcional</option>
+                            <option value="required">★ obligatorio</option>
+                          </select>
                           <code className="font-mono text-xs">{g.name}</code>
-                          <span className="text-[10px] text-dim">{g.kind}</span>
+                          <span className="text-[10px] text-dim">
+                            {g.kind}
+                          </span>
                           {g.label && (
                             <span className="text-[10px] text-dim truncate">
                               — {g.label}
@@ -1721,12 +1765,55 @@ export function DesignEditor({
                               pisado por local
                             </span>
                           )}
-                        </label>
+                        </div>
                       );
                     })}
                   </div>
                 )}
               </div>
+
+              {/* Locales del proyecto: select de opcional/obligatorio */}
+              {(cfg.parameters ?? []).length > 0 && (
+                <div className="mt-3 bg-surface-2 border border-surface rounded p-3">
+                  <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+                    Parámetros locales — obligatoriedad
+                  </h4>
+                  <div className="space-y-1">
+                    {(cfg.parameters ?? []).map((p) => {
+                      const req =
+                        (cfg.param_requirements ?? {})[p.name] ?? "optional";
+                      return (
+                        <div
+                          key={p.name}
+                          className="flex items-center gap-2 text-sm text-app"
+                        >
+                          <select
+                            value={req}
+                            onChange={(e) => {
+                              const next = e.target.value as
+                                | "optional"
+                                | "required";
+                              applyChange({
+                                ...cfg,
+                                param_requirements: {
+                                  ...(cfg.param_requirements ?? {}),
+                                  [p.name]: next,
+                                },
+                              });
+                            }}
+                            className="milhouse-field text-xs py-0.5 w-32"
+                          >
+                            <option value="optional">opcional</option>
+                            <option value="required">★ obligatorio</option>
+                          </select>
+                          <code className="font-mono text-xs">{p.name}</code>
+                          <span className="text-[10px] text-dim">{p.kind}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Exposición como API REST */}
@@ -1747,9 +1834,21 @@ export function DesignEditor({
         localParams={cfg.parameters ?? []}
         globalParams={globalParams.parameters}
         selectedGlobals={cfg.selected_global_params ?? []}
+        paramRequirements={cfg.param_requirements ?? {}}
         runDefaults={cfg.run_defaults ?? {}}
+        allPresets={[
+          ...(cfg.presets ?? []),
+          ...globalParams.presets.filter(
+            (g) => !(cfg.presets ?? []).some((l) => l.name === g.name),
+          ),
+        ]}
+        presetGroups={globalParams.preset_groups}
+        selectedPresetGroups={cfg.selected_preset_groups ?? []}
         onChange={(next) =>
           applyChange({ ...cfg, run_defaults: next })
+        }
+        onChangeSelectedGroups={(next) =>
+          applyChange({ ...cfg, selected_preset_groups: next })
         }
       />
 
@@ -2055,16 +2154,30 @@ function RunDefaultsPanel({
   localParams,
   globalParams,
   selectedGlobals,
+  paramRequirements,
   runDefaults,
+  allPresets,
+  presetGroups,
+  selectedPresetGroups,
   onChange,
+  onChangeSelectedGroups,
 }: {
   open: boolean;
   onToggle: () => void;
   localParams: ParamSpec[];
   globalParams: ParamSpec[];
   selectedGlobals: string[];
+  paramRequirements: Record<string, "optional" | "required">;
   runDefaults: Record<string, ParamValueJson>;
+  allPresets: ParamPreset[];
+  presetGroups: Array<{
+    name: string;
+    description?: string | null;
+    preset_names: string[];
+  }>;
+  selectedPresetGroups: string[];
   onChange: (next: Record<string, ParamValueJson>) => void;
+  onChangeSelectedGroups: (next: string[]) => void;
 }) {
   // Lista efectiva de parámetros que aplican: locales + globales seleccionados.
   // Local pisa global por nombre (mismo criterio que el backend).
@@ -2078,6 +2191,32 @@ function RunDefaultsPanel({
       .map((g) => ({ ...g, source: "global" as const })),
   ];
 
+  // Valores que vienen RESUELTOS por los grupos seleccionados (presets
+  // aplicados en orden; último gana). Se muestran como "ya respondidos"
+  // y NO se editan acá — para cambiar, el usuario edita el preset o
+  // sale del grupo.
+  const presetByName = new Map(allPresets.map((p) => [p.name, p]));
+  const fromGroups: Record<string, { value: ParamValueJson; via: string }> = {};
+  for (const groupName of selectedPresetGroups) {
+    const grp = presetGroups.find((g) => g.name === groupName);
+    if (!grp) continue;
+    for (const presetName of grp.preset_names) {
+      const pr = presetByName.get(presetName);
+      if (!pr) continue;
+      for (const [k, v] of Object.entries(pr.values)) {
+        fromGroups[k] = { value: v, via: `${groupName} → ${presetName}` };
+      }
+    }
+  }
+
+  // Lista efectiva de pendientes = available sin los ya respondidos por
+  // grupo Y sin los que ya están en run_defaults.
+  const answeredByGroupOrDefault = new Set<string>([
+    ...Object.keys(fromGroups),
+    ...Object.keys(runDefaults),
+  ]);
+  const pending = available.filter((p) => !answeredByGroupOrDefault.has(p.name));
+
   function setVal(name: string, v: ParamValueJson | null) {
     const next = { ...runDefaults };
     if (v == null) {
@@ -2088,7 +2227,20 @@ function RunDefaultsPanel({
     onChange(next);
   }
 
-  const answered = available.filter((p) => p.name in runDefaults).length;
+  function toggleGroup(name: string) {
+    const has = selectedPresetGroups.includes(name);
+    onChangeSelectedGroups(
+      has
+        ? selectedPresetGroups.filter((n) => n !== name)
+        : [...selectedPresetGroups, name],
+    );
+  }
+
+  const answered =
+    Object.keys(fromGroups).length +
+    available.filter(
+      (p) => p.name in runDefaults && !(p.name in fromGroups),
+    ).length;
 
   return (
     <div className="bg-panel border border-surface rounded-xl">
@@ -2112,70 +2264,206 @@ function RunDefaultsPanel({
         <span className="text-dim">{open ? "▾" : "▸"}</span>
       </button>
       {open && (
-        <div className="border-t border-surface p-3">
+        <div className="border-t border-surface p-3 space-y-3">
+          {/* Grupos de respuestas que aplican siempre */}
+          {presetGroups.length > 0 && (
+            <div className="bg-surface-2 border border-surface rounded p-3">
+              <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+                Grupos de respuestas aplicados ({selectedPresetGroups.length}{" "}
+                / {presetGroups.length})
+              </h4>
+              <p className="text-[11px] text-dim mb-2">
+                Cada grupo aporta valores que quedan resueltos al ejecutar.
+                Si activás varios, sus respuestas se aplican en orden — el
+                último gana en colisión.
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {presetGroups.map((g) => {
+                  const on = selectedPresetGroups.includes(g.name);
+                  return (
+                    <button
+                      key={g.name}
+                      onClick={() => toggleGroup(g.name)}
+                      className={`text-xs px-2 py-1 rounded border ${
+                        on
+                          ? "border-cyan-600"
+                          : "milhouse-btn-secondary border-surface-strong"
+                      }`}
+                      style={
+                        on
+                          ? {
+                              background: "var(--accent)",
+                              color: "var(--accent-ink)",
+                            }
+                          : undefined
+                      }
+                      title={
+                        (g.description ? g.description + " · " : "") +
+                        `Aplica: ${g.preset_names.join(", ")}`
+                      }
+                    >
+                      {on ? "✓ " : "📦 "}
+                      {g.name}
+                      <span className="text-[10px] opacity-75 ml-1">
+                        ({g.preset_names.length})
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {available.length === 0 ? (
             <div className="text-sm text-dim">
               Este proyecto no tiene parámetros locales ni globales
               seleccionados. Agregalos en "Propiedades del proyecto".
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-muted text-[10px] uppercase tracking-wider">
-                  <th className="text-left px-2 py-1 font-medium">Parámetro</th>
-                  <th className="text-left px-2 py-1 font-medium">Tipo</th>
-                  <th className="text-left px-2 py-1 font-medium">Origen</th>
-                  <th className="text-left px-2 py-1 font-medium">
-                    Respuesta por default
-                  </th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {available.map((p) => {
-                  const v = runDefaults[p.name];
-                  return (
-                    <tr key={p.name} className="border-t border-surface">
-                      <td className="px-2 py-1.5">
-                        <code className="font-mono text-xs">{p.name}</code>
-                        {p.label && (
-                          <div className="text-[10px] text-dim">{p.label}</div>
-                        )}
-                      </td>
-                      <td className="px-2 py-1.5 text-[11px] text-dim">
-                        {p.kind}
-                      </td>
-                      <td className="px-2 py-1.5 text-[11px]">
-                        {p.source === "local" ? (
-                          <span className="text-cyan-300">local</span>
-                        ) : (
-                          <span className="text-emerald-300">global</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <RunDefaultEditor
-                          param={p}
-                          value={v}
-                          onChange={(next) => setVal(p.name, next)}
-                        />
-                      </td>
-                      <td className="px-2 py-1.5 text-right">
-                        {p.name in runDefaults && (
-                          <button
-                            type="button"
-                            onClick={() => setVal(p.name, null)}
-                            className="text-xs text-dim hover:text-app"
-                            title="Quitar respuesta default"
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <>
+              {/* Sección "Ya respondidos por grupo" */}
+              {Object.keys(fromGroups).length > 0 && (
+                <div className="bg-surface-2 border border-surface rounded p-3">
+                  <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+                    Ya respondidos por grupo ({Object.keys(fromGroups).length})
+                  </h4>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-muted text-[10px] uppercase tracking-wider">
+                        <th className="text-left px-2 py-1 font-medium">
+                          Parámetro
+                        </th>
+                        <th className="text-left px-2 py-1 font-medium">Valor</th>
+                        <th className="text-left px-2 py-1 font-medium">
+                          Origen
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {available
+                        .filter((p) => p.name in fromGroups)
+                        .map((p) => {
+                          const v = fromGroups[p.name];
+                          const display = Array.isArray(v.value)
+                            ? `[${v.value.length} valor${v.value.length === 1 ? "" : "es"}]`
+                            : v.value;
+                          const isReq =
+                            paramRequirements[p.name] === "required";
+                          return (
+                            <tr key={p.name} className="border-t border-surface">
+                              <td className="px-2 py-1.5">
+                                <code className="font-mono text-xs">
+                                  {p.name}
+                                </code>
+                                {isReq && (
+                                  <span
+                                    className="ml-1 text-[10px] text-amber-300"
+                                    title="Parámetro obligatorio"
+                                  >
+                                    ★
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-2 py-1.5 font-mono text-xs text-cyan-300">
+                                {display}
+                              </td>
+                              <td className="px-2 py-1.5 text-[11px] text-dim">
+                                {v.via}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Sección "Por responder" */}
+              <div>
+                <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+                  Por responder ({pending.length} / {available.length})
+                </h4>
+                {pending.length === 0 ? (
+                  <div className="text-sm text-dim italic">
+                    Todos los parámetros tienen valor (por grupo o por default).
+                  </div>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-muted text-[10px] uppercase tracking-wider">
+                        <th className="text-left px-2 py-1 font-medium">
+                          Parámetro
+                        </th>
+                        <th className="text-left px-2 py-1 font-medium">Tipo</th>
+                        <th className="text-left px-2 py-1 font-medium">
+                          Origen
+                        </th>
+                        <th className="text-left px-2 py-1 font-medium">
+                          Respuesta por default
+                        </th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pending.map((p) => {
+                        const v = runDefaults[p.name];
+                        const isReq =
+                          paramRequirements[p.name] === "required";
+                        return (
+                          <tr key={p.name} className="border-t border-surface">
+                            <td className="px-2 py-1.5">
+                              <code className="font-mono text-xs">{p.name}</code>
+                              {isReq && (
+                                <span
+                                  className="ml-1 text-[10px] text-amber-300"
+                                  title="Parámetro obligatorio — sin valor el job no arranca"
+                                >
+                                  ★
+                                </span>
+                              )}
+                              {p.label && (
+                                <div className="text-[10px] text-dim">
+                                  {p.label}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 text-[11px] text-dim">
+                              {p.kind}
+                            </td>
+                            <td className="px-2 py-1.5 text-[11px]">
+                              {p.source === "local" ? (
+                                <span className="text-cyan-300">local</span>
+                              ) : (
+                                <span className="text-emerald-300">global</span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <RunDefaultEditor
+                                param={p}
+                                value={v}
+                                onChange={(next) => setVal(p.name, next)}
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {p.name in runDefaults && (
+                                <button
+                                  type="button"
+                                  onClick={() => setVal(p.name, null)}
+                                  className="text-xs text-dim hover:text-app"
+                                  title="Quitar respuesta default"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
           )}
         </div>
       )}

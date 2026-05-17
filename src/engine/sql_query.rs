@@ -12,7 +12,17 @@ pub async fn run(
     keep_time_columns: &[String],
     reporter: ProgressReporter,
 ) -> Result<DataFrame> {
-    let opened = ctx.connections.get_any(connection).await?;
+    // get_any puede colgar 10-25s si la base no responde (timeouts del
+    // open_connection). Lo envolvemos en select! con el cancel del job
+    // para que el "Cancelar todo" interrumpa el step ahí también, no
+    // solo después de tener conexión.
+    let opened = tokio::select! {
+        biased;
+        _ = ctx.cancel.cancelled() => {
+            return Err(anyhow!("cancelado mientras se abría la conexión"));
+        }
+        res = ctx.connections.get_any(connection) => res?,
+    };
     let q = query.to_string();
     let cancel = ctx.cancel.clone();
     // Log "enviado": timestamp + conexión + texto del SQL. El timestamp lo

@@ -654,13 +654,13 @@ export function ParametersPanel({
                             tab "Respuestas guardadas".
                           </div>
                         ) : (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                          <div className="space-y-1">
                             {presets.map((pr) => {
                               const checked = memberSet.has(pr.name);
                               return (
                                 <label
                                   key={pr.name}
-                                  className="flex items-center gap-2 text-sm cursor-pointer text-app"
+                                  className="flex items-start gap-2 text-sm cursor-pointer text-app p-1 rounded hover:bg-surface"
                                   title={pr.description ?? ""}
                                 >
                                   <input
@@ -679,10 +679,24 @@ export function ParametersPanel({
                                       };
                                       setGroups(next);
                                     }}
+                                    className="mt-0.5 shrink-0"
                                   />
-                                  <code className="font-mono text-xs">
-                                    {pr.name}
-                                  </code>
+                                  <div className="min-w-0 flex-1">
+                                    <code className="font-mono text-xs">
+                                      {pr.name}
+                                    </code>
+                                    {pr.description && (
+                                      <div className="text-[11px] text-dim leading-snug mt-0.5">
+                                        {pr.description}
+                                      </div>
+                                    )}
+                                    {!pr.description && (
+                                      <div className="text-[10px] text-dim italic mt-0.5">
+                                        (sin descripción) — agregá una al
+                                        editar la respuesta
+                                      </div>
+                                    )}
+                                  </div>
                                 </label>
                               );
                             })}

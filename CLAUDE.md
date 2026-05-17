@@ -84,7 +84,10 @@ src/
                           códigos canónicos compartidos entre proyectos
                           (kind number|text|raw_sql), referenciados como
                           `:Grupo.Nombre`. Path env:
-                          MILHOUSE_GLOBAL_CONSTANTS_PATH.
+                          MILHOUSE_GLOBAL_CONSTANTS_PATH. Built-ins
+                          siempre disponibles: `:Fecha.Today`,
+                          `:Fecha.StartOfMonth`, etc (evaluados al
+                          inicio del job).
     users.rs              UsersFile (users.json)
   engine/
     context.rs            TableStore, ConnectionPool, StepContext,
@@ -240,10 +243,25 @@ grupo aplica todos sus presets en orden (último gana por colisión).
 ejecutar (precedencia más fuerte arriba):
 1. `req.parameters` (lo que respondió el usuario en el prompt).
 2. `cfg.run_defaults` (respuestas por default del proyecto).
-3. `ParamSpec.default` (valor por default de la definición global).
+3. `cfg.selected_preset_groups` (grupos de respuestas que aplican
+   siempre al proyecto — sus presets se aplican en orden; último gana).
+4. `ParamSpec.default` (valor por default de la definición global).
 
-Si después de los tres niveles algún parámetro usado en los pasos sigue
-sin valor, `create_job` rechaza con error claro.
+Si después de los cuatro niveles algún parámetro usado en los pasos
+sigue sin valor, `create_job` rechaza con error claro.
+
+**Requirement por proyecto** (`ParamRequirement` = `Optional | Required`):
+- Mapa `EtlConfig.param_requirements: HashMap<String, ParamRequirement>`.
+- `Required`: si después de la cadena de fallbacks no hay valor, el
+  endpoint `create_job` rechaza con HTTP 400 listando los faltantes
+  ("parámetros obligatorios sin valor: ..."). Independiente de si la
+  query los usa o no.
+- `Optional` (default cuando no aparece en el mapa): el job arranca
+  igual. Si la query referencia un `:param` sin valor, falla con el
+  error de "param no resuelto" como siempre.
+- Globales **no agregados** al proyecto: están fuera de
+  `selected_global_params` y no se mergean (equivale a "no aplica" —
+  no es un valor del enum, sino la ausencia en la lista).
 
 Uso en SQL/expresiones: `:NombreDelParametro`. El motor sustituye **antes**
 de despachar al backend SQL (en `engine/mod.rs`):
@@ -475,19 +493,25 @@ step_sql_session, job_eta, job_finished
   `settings.max_parallel_steps` — input numérico. Vacío = sin límite;
   `1` = serial. El scheduler respeta este cap al spawnear; los ready
   que no caben quedan en cola con estado Ready.
-- **Opt-in de parámetros globales**: `EtlConfig.selected_global_params:
-  Vec<String>`. Solo los globales listados se mergean a `parameters`
-  al ejecutar. Si la lista está vacía → ningún global se aplica. UI en
-  Propiedades del proyecto con checkbox por global declarado. Antes
-  todos los globales se aplicaban por default; ahora es opt-in
-  explícito.
+- **Opt-in de parámetros globales con requirement por proyecto**:
+  `EtlConfig.selected_global_params: Vec<String>` (los globales que
+  aplican) + `EtlConfig.param_requirements: HashMap<String,
+  ParamRequirement>` (opcional/obligatorio). En Propiedades del proyecto,
+  cada global tiene un select de 3 opciones (no aplica / opcional /
+  ★ obligatorio). Los parámetros locales también tienen su select
+  opcional/obligatorio. Si un parámetro `Required` no tiene valor
+  después de la cadena de fallbacks, el backend rechaza con HTTP 400.
 - **"Propiedades de ejecución"** (panel propio colapsable, debajo de
-  Propiedades del proyecto): editor de `EtlConfig.run_defaults:
-  HashMap<String, ParamValue>` — respuestas por default que pre-rellenan
-  el prompt al ejecutar. Tabla con todos los parámetros disponibles
-  (locales + globales seleccionados), origen marcado (cyan/emerald),
-  editor por kind, ✕ por fila para borrar. El backend usa
-  `run_defaults` como fallback de `req.parameters` (request gana).
+  Propiedades del proyecto): tiene tres sub-secciones:
+  1. **Pills de grupos** (`selected_preset_groups`): clickeables, los
+     activos aplican siempre al ejecutar y sus respuestas se ven en (2).
+  2. **Ya respondidos por grupo**: tabla read-only con valor + origen
+     (`grupo → preset`). Badge ★ si el param es obligatorio.
+  3. **Por responder**: editor para los que quedaron sin valor de
+     grupo. `runDefaults` editable por kind. Badge ★ idem.
+  El header muestra `N / M respondidos` (cuenta agregada). El backend
+  usa `run_defaults` y los presets de los grupos como niveles 2 y 3
+  de la cadena de fallbacks.
 - Cancelar job activo (botón ⏹ y opción en menú del nodo). DuckDB
   usa `interrupt_handle()`; SQL Server con `sql_session` capturado
   manda `KILL <SPID>` via lease paralelo del pool; MySQL/ODBC liberan
@@ -815,10 +839,44 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **Requirement por parámetro** (`ParamRequirement { Optional, Required }`).
+  `EtlConfig.param_requirements: HashMap<String, ParamRequirement>`. En
+  Propiedades del proyecto, selects de 3 opciones para globales
+  (no aplica / opcional / ★ obligatorio) y 2 para locales (opcional /
+  obligatorio). Backend rechaza el job con HTTP 400 si un param
+  obligatorio no obtuvo valor.
+- **Grupos de respuestas a nivel proyecto**
+  (`EtlConfig.selected_preset_groups: Vec<String>`). Aplican siempre al
+  ejecutar — sus valores entran como nivel 3 de la cadena de fallbacks
+  (debajo de `run_defaults`, encima de `ParamSpec.default`). UI: pills
+  de grupos en "Propiedades de ejecución" + sección "Ya respondidos
+  por grupo" (read-only, con origen `grupo → preset`) + "Por responder"
+  (editor normal).
+- **Descripción de cada preset al editar grupo**: en el tab "Grupos de
+  respuestas", cada checkbox ahora muestra debajo del nombre la
+  description del preset (o hint en cursiva si no tiene). Layout pasa
+  a stack para que las descripciones sean legibles.
+- **Constantes built-in de fecha** (`merge_with_builtins` en
+  `config/constants.rs`). Siempre disponibles sin declararlas en
+  `constants.json`: `:Fecha.Today`, `:Fecha.Yesterday`, `:Fecha.Tomorrow`,
+  `:Fecha.StartOfMonth`, `:Fecha.EndOfMonth`, `:Fecha.StartOfYear`,
+  `:Fecha.EndOfYear`. Kind `Text` — se sustituyen con quotes. Evaluadas
+  al inicio del job (no son fechas vivas; reproducibilidad). Si el
+  usuario declara una constante con el mismo full_name, la suya gana.
+- **Cancel no se cuelga con conexión SQL Server caída**:
+  - Timeouts duros al abrir conexión: 10s TCP +
+    15s handshake (configurables con
+    `MILHOUSE_SQL_TCP_TIMEOUT_SECS` / `MILHOUSE_SQL_HANDSHAKE_TIMEOUT_SECS`).
+  - `ConnectionPool::get_any` ya no mantiene el cache lock durante el
+    connect — antes bloqueaba todas las queries de OTRAS conexiones.
+  - `sql_query::run` envuelve `get_any` en `tokio::select!` con cancel:
+    "Cancelar todo" interrumpe el step incluso durante el connect
+    inicial.
 - **`ParamSpec.default`** — fallback final del parámetro a nivel de la
   definición. Cadena de fallbacks en backend: request > `cfg.run_defaults`
-  > `ParamSpec.default`. UI: editor inline en el tab Parámetros, debajo
-  de cada parámetro, con control adecuado por kind.
+  > grupos seleccionados > `ParamSpec.default`. UI: editor inline en
+  el tab Parámetros, debajo de cada parámetro, con control adecuado
+  por kind.
 - **Fechas dinámicas** (`engine/dyn_dates.rs`): tokens (`today`,
   `start_of_month`, etc) + offsets (`today - 20d`, `start_of_month + 1m`)
   resueltos contra hoy antes de quotear. Aplica en **cualquier** valor

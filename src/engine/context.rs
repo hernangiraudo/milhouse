@@ -228,12 +228,26 @@ impl ConnectionPool {
             guard.resolve(name).map_err(|e| anyhow!("{e}"))?.clone()
         };
         let key = conn_def.name.clone();
+        // Chequeo rápido bajo lock; si ya está abierta, devolvemos.
+        {
+            let cache = self.cache.lock().await;
+            if let Some(existing) = cache.get(&key) {
+                return Ok(existing.clone());
+            }
+        }
+        // No estaba en cache: abrimos FUERA del lock. Mantener el lock
+        // durante un TCP connect que puede tardar 10s+ bloquea cualquier
+        // otra acquire del pool (incluso de OTRAS conexiones) y deja al
+        // job sin posibilidad de cancelar por race con el cancel global.
+        let opened = open_connection(&conn_def).await?;
+        let arc = Arc::new(opened);
+        // Re-tomar el lock para insertar. Si otra task ganó la carrera y
+        // ya abrió la misma conexión, usamos la suya y descartamos la
+        // nuestra.
         let mut cache = self.cache.lock().await;
         if let Some(existing) = cache.get(&key) {
             return Ok(existing.clone());
         }
-        let opened = open_connection(&conn_def).await?;
-        let arc = Arc::new(opened);
         cache.insert(key, arc.clone());
         Ok(arc)
     }
@@ -378,13 +392,44 @@ async fn open_sql_server(
     if trust_server_certificate {
         cfg.trust_cert();
     }
-    let tcp = TcpStream::connect(cfg.get_addr())
-        .await
-        .map_err(|e| anyhow!("connecting SQL Server `{conn_name}` at {host}:{port}: {e}"))?;
+    // Timeouts duros: si la base no responde (host inalcanzable, firewall,
+    // sin red), fallar rápido en vez de bloquear al cancel del job durante
+    // 75s+ (timeout default del SO). Configurable via env vars; defaults
+    // de 10s + 15s son altos para LAN y aceptables para WAN.
+    let tcp_timeout = std::env::var("MILHOUSE_SQL_TCP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(10);
+    let handshake_timeout = std::env::var("MILHOUSE_SQL_HANDSHAKE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(15);
+
+    let tcp = tokio::time::timeout(
+        std::time::Duration::from_secs(tcp_timeout),
+        TcpStream::connect(cfg.get_addr()),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "timeout ({tcp_timeout}s) abriendo TCP a SQL Server `{conn_name}` ({host}:{port}). \
+             ¿No hay red / firewall / la base está apagada?"
+        )
+    })?
+    .map_err(|e| anyhow!("connecting SQL Server `{conn_name}` at {host}:{port}: {e}"))?;
     tcp.set_nodelay(true).ok();
-    let client = tiberius::Client::connect(cfg, tcp.compat_write())
-        .await
-        .map_err(|e| anyhow!("SQL Server handshake `{conn_name}`: {e}"))?;
+    let client = tokio::time::timeout(
+        std::time::Duration::from_secs(handshake_timeout),
+        tiberius::Client::connect(cfg, tcp.compat_write()),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "timeout ({handshake_timeout}s) en handshake SQL Server `{conn_name}`. \
+             ¿Credenciales incorrectas o instancia mal configurada?"
+        )
+    })?
+    .map_err(|e| anyhow!("SQL Server handshake `{conn_name}`: {e}"))?;
     Ok(client)
 }
 

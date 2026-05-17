@@ -32,11 +32,28 @@ pub struct EtlConfig {
     /// coincide con un parámetro local, el local pisa al global.
     #[serde(default)]
     pub selected_global_params: Vec<String>,
+    /// Requirement por nombre de parámetro (local o global seleccionado).
+    /// Tres niveles:
+    /// - `"optional"` (default si no aparece): el job puede correr sin
+    ///   valor. Para SQL dinámico el usuario sabrá si vino o no.
+    /// - `"required"`: si no hay valor al ejecutar (request + run_defaults
+    ///   + ParamSpec.default), `create_job` rechaza con error claro
+    ///   listando los faltantes.
+    /// Para globales que NO están en `selected_global_params`, el
+    /// requirement efectivo es "no_aplica" (no se mergean al proyecto).
+    #[serde(default)]
+    pub param_requirements: std::collections::HashMap<String, ParamRequirement>,
     /// Respuestas por default a parámetros del proyecto (locales y
     /// globales seleccionados). Pre-llenan el prompt de ejecución; el
     /// usuario puede confirmar o sobreescribir antes de lanzar.
     #[serde(default)]
     pub run_defaults: HashMap<String, ParamValue>,
+    /// Grupos de respuestas (globales) que aplican siempre al ejecutar
+    /// este proyecto. Al armar el job, los valores de sus presets se
+    /// mergean a `run_defaults` (presets aplicados en orden; el último
+    /// gana en colisión).
+    #[serde(default)]
+    pub selected_preset_groups: Vec<String>,
     /// Configuración para exponer el proyecto como API REST pública.
     #[serde(default)]
     pub api: ApiConfig,
@@ -83,6 +100,19 @@ pub struct ApiConfig {
 
 fn default_true() -> bool {
     true
+}
+
+/// Requirement de un parámetro DENTRO de un proyecto. Per-proyecto,
+/// no per-definición global (un mismo parámetro global puede ser
+/// obligatorio en un proyecto y opcional en otro).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamRequirement {
+    /// El parámetro aplica pero puede quedar sin responder.
+    #[default]
+    Optional,
+    /// Si no hay valor al ejecutar, el job se rechaza con error.
+    Required,
 }
 
 /// Tipo de parámetro. Determina cómo se renderiza en la UI y cómo se

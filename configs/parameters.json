@@ -45,8 +45,8 @@
       "name": "YTD",
       "description": "Year to Date 2026",
       "values": {
-        "FechaDesde": "2025-12-31",
-        "FechaHasta": "2026-05-15"
+        "FechaHasta": "2026-05-15",
+        "FechaDesde": "2025-12-31"
       }
     },
     {
@@ -57,5 +57,13 @@
       }
     }
   ],
-  "preset_groups": []
+  "preset_groups": [
+    {
+      "name": "c17215 YTD",
+      "preset_names": [
+        "YTD",
+        "c17215"
+      ]
+    }
+  ]
 }
