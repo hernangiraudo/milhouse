@@ -221,6 +221,16 @@ export function ParametersPanel({
     targetParam: string;
     targetKind: ParamKind;
   } | null>(null);
+  // Selector de "a qué parámetro aplicar la respuesta importada". Se
+  // abre primero (ANTES del asistente de Excel) cuando el usuario elige
+  // un archivo desde el botón "Importar Excel".
+  const [excelTargetPicker, setExcelTargetPicker] = useState<{
+    file: File;
+    candidates: ParamSpec[];
+    /** Selección actual del select. Pre-seleccionada con el primer
+     *  candidato; el usuario puede cambiarla antes de continuar. */
+    selectedName: string;
+  } | null>(null);
 
   // Parámetros que admiten importar listas:
   //  - `number`: el motor splittea "1,2,3" como lista al sustituir.
@@ -238,30 +248,13 @@ export function ParametersPanel({
       );
       return;
     }
-    let chosen = candidates[0];
-    if (candidates.length > 1) {
-      const picked = await dialog.prompt(
-        `¿A qué parámetro asignar los valores importados?\n\n${candidates
-          .map((p) => `  • ${p.name} (${p.kind})`)
-          .join("\n")}`,
-        {
-          title: "Parámetro destino",
-          defaultValue: candidates[0].name,
-          validate: (v) => {
-            const t = v.trim();
-            if (!t) return "obligatorio";
-            if (!candidates.some((p) => p.name === t))
-              return "ese parámetro no existe o no admite importación";
-            return null;
-          },
-        },
-      );
-      if (!picked?.trim()) return;
-      const found = candidates.find((p) => p.name === picked.trim());
-      if (!found) return;
-      chosen = found;
-    }
-    setExcelImport({ file, targetParam: chosen.name, targetKind: chosen.kind });
+    // Siempre mostramos el selector — el usuario confirma a qué
+    // parámetro va aunque haya uno solo. Consistencia + menos sorpresas.
+    setExcelTargetPicker({
+      file,
+      candidates,
+      selectedName: candidates[0].name,
+    });
   }
 
   async function finishExcelImport(
@@ -948,6 +941,92 @@ export function ParametersPanel({
               );
             })
           )}
+        </div>
+      )}
+
+      {excelTargetPicker && (
+        <div
+          className="fixed inset-0 z-[68] flex items-center justify-center p-6"
+          style={{
+            background: "rgba(0,0,0,0.45)",
+            backdropFilter: "blur(2px)",
+          }}
+          onClick={() => setExcelTargetPicker(null)}
+        >
+          <div
+            className="bg-surface border border-surface-strong rounded-xl p-5 w-full max-w-md space-y-3"
+            style={{ boxShadow: "var(--shadow)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-bold text-app">
+              📂 ¿A qué parámetro aplicar la respuesta?
+            </h3>
+            <p className="text-xs text-muted">
+              Vas a importar valores desde{" "}
+              <code className="font-mono">{excelTargetPicker.file.name}</code>.
+              Elegí el parámetro destino — los valores van a quedar como
+              respuesta de ese parámetro al ejecutar.
+            </p>
+            <label className="block">
+              <span className="text-[11px] uppercase tracking-wider text-dim block mb-1">
+                Parámetro destino
+              </span>
+              <select
+                value={excelTargetPicker.selectedName}
+                onChange={(e) =>
+                  setExcelTargetPicker({
+                    ...excelTargetPicker,
+                    selectedName: e.target.value,
+                  })
+                }
+                className="w-full milhouse-field"
+                autoFocus
+              >
+                {excelTargetPicker.candidates.map((p) => {
+                  const cat = p.category ?? "other";
+                  const catLabel =
+                    cat in CATEGORY_LABEL
+                      ? CATEGORY_LABEL[cat as ParamCategory]
+                      : cat;
+                  return (
+                    <option key={p.name} value={p.name}>
+                      {p.name} ({catLabel} · {KIND_LABEL[p.kind]})
+                      {p.label ? ` — ${p.label}` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+            <div className="flex justify-end gap-2 pt-2 border-t border-surface">
+              <button
+                onClick={() => setExcelTargetPicker(null)}
+                className="text-sm px-3 py-1.5 rounded milhouse-btn-secondary"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  const sel = excelTargetPicker.candidates.find(
+                    (p) => p.name === excelTargetPicker.selectedName,
+                  );
+                  if (!sel) return;
+                  setExcelImport({
+                    file: excelTargetPicker.file,
+                    targetParam: sel.name,
+                    targetKind: sel.kind,
+                  });
+                  setExcelTargetPicker(null);
+                }}
+                className="text-sm font-semibold px-3 py-1.5 rounded"
+                style={{
+                  background: "var(--accent)",
+                  color: "var(--accent-ink)",
+                }}
+              >
+                Continuar
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
