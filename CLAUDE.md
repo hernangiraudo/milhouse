@@ -877,6 +877,16 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **Selector explícito de parámetro destino al importar Excel**: ahora
+  al apretar "📂 Importar Excel" aparece un modal previo al asistente
+  con `<select>` "¿A qué parámetro aplicar la respuesta?" mostrando
+  cada candidato como `Nombre (Categoría · kind) — label`. Aparece
+  siempre, incluso con un solo candidato. Reemplaza al `dialog.prompt`
+  de texto libre (mala UX).
+- **Checkboxes separados** en el tab Parámetros: "Tipo de Datos"
+  (controla el select de kind, antes "Mostrar tipo") + nuevo "Tipo de
+  Parámetro" (controla el select de categoría). Ambos off por default.
+  El grid de cada fila se adapta a las 4 combinaciones.
 - **Asistente de import Excel** (`ExcelImportDialog`): modal con
   selector de hoja, preview de las primeras 20 filas, columna de ID
   (la que se filtra en SQL), columnas descriptivas opcionales,
