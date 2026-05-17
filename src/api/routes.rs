@@ -569,6 +569,10 @@ pub async fn create_job(
     // del front no trae valor para un parámetro pero el proyecto tiene
     // default guardado, se usa el default. El request sigue ganando si
     // trae valor (el usuario pudo haber sobreescrito en el prompt).
+    // Cadena de fallbacks (precedencia más fuerte arriba):
+    //   1. req.parameters (lo que el usuario respondió en el prompt)
+    //   2. cfg.run_defaults (respuestas default del proyecto)
+    //   3. ParamSpec.default (default a nivel de la definición del param)
     let req_parameters_with_defaults: std::collections::HashMap<
         String,
         crate::config::ParamValue,
@@ -576,6 +580,11 @@ pub async fn create_job(
         let mut out = req.parameters.clone();
         for (name, value) in &cfg.run_defaults {
             out.entry(name.clone()).or_insert_with(|| value.clone());
+        }
+        for p in &cfg.parameters {
+            if let Some(def) = &p.default {
+                out.entry(p.name.clone()).or_insert_with(|| def.clone());
+            }
         }
         out
     };

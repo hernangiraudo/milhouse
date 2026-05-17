@@ -115,6 +115,12 @@ pub struct ParamSpec {
     pub label: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Valor por default del parámetro. Si el request no trae valor y el
+    /// proyecto no tiene `run_defaults` para este nombre, se usa este
+    /// fallback. Precedencia general: request > run_defaults del proyecto
+    /// > `ParamSpec.default`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<ParamValue>,
 }
 
 /// Valor resuelto de un parámetro. Lo que se sustituye en el SQL.

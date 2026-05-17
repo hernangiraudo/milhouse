@@ -290,42 +290,59 @@ export function ParametersPanel({
               {parameters.map((p, i) => (
                 <div
                   key={i}
-                  className="grid grid-cols-[1fr_140px_2fr_30px] gap-2 items-center bg-surface-2 border border-surface rounded p-2"
+                  className="bg-surface-2 border border-surface rounded p-2 space-y-1.5"
                 >
-                  <input
-                    value={p.name}
-                    onChange={(e) => updateParam(i, { name: e.target.value })}
-                    placeholder="Nombre (ej. FechaDesde)"
-                    className="milhouse-field text-sm font-mono"
-                  />
-                  <select
-                    value={p.kind}
-                    onChange={(e) =>
-                      updateParam(i, { kind: e.target.value as ParamKind })
-                    }
-                    className="milhouse-field text-sm"
-                  >
-                    {Object.entries(KIND_LABEL).map(([k, label]) => (
-                      <option key={k} value={k}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    value={p.label ?? ""}
-                    onChange={(e) =>
-                      updateParam(i, { label: e.target.value || null })
-                    }
-                    placeholder="Etiqueta visible (opcional)"
-                    className="milhouse-field text-sm"
-                  />
-                  <button
-                    onClick={() => deleteParam(i)}
-                    className="text-red-400 text-xs"
-                    title="Eliminar"
-                  >
-                    ✕
-                  </button>
+                  <div className="grid grid-cols-[1fr_140px_2fr_30px] gap-2 items-center">
+                    <input
+                      value={p.name}
+                      onChange={(e) => updateParam(i, { name: e.target.value })}
+                      placeholder="Nombre (ej. FechaDesde)"
+                      className="milhouse-field text-sm font-mono"
+                    />
+                    <select
+                      value={p.kind}
+                      onChange={(e) =>
+                        updateParam(i, { kind: e.target.value as ParamKind })
+                      }
+                      className="milhouse-field text-sm"
+                    >
+                      {Object.entries(KIND_LABEL).map(([k, label]) => (
+                        <option key={k} value={k}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      value={p.label ?? ""}
+                      onChange={(e) =>
+                        updateParam(i, { label: e.target.value || null })
+                      }
+                      placeholder="Etiqueta visible (opcional)"
+                      className="milhouse-field text-sm"
+                    />
+                    <button
+                      onClick={() => deleteParam(i)}
+                      className="text-red-400 text-xs"
+                      title="Eliminar"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-[110px_1fr] gap-2 items-center">
+                    <span
+                      className="text-[10px] uppercase tracking-wider text-dim text-right pr-1"
+                      title="Valor por default si nadie responde el parámetro al ejecutar"
+                    >
+                      Default
+                    </span>
+                    <ParamDefaultEditor
+                      param={p}
+                      value={p.default ?? undefined}
+                      onChange={(next) =>
+                        updateParam(i, { default: next })
+                      }
+                    />
+                  </div>
                 </div>
               ))}
             </div>
@@ -806,4 +823,267 @@ function PresetParamRow({
       </div>
     </div>
   );
+}
+
+/**
+ * Editor del valor "default" de la definición del parámetro. Para
+ * kind=date soporta toggle entre fecha fija (date picker) y expresión
+ * dinámica (`today`, `today - 20d`, `start_of_month`, etc), con preview
+ * del valor resuelto contra el día actual.
+ */
+function ParamDefaultEditor({
+  param,
+  value,
+  onChange,
+}: {
+  param: ParamSpec;
+  value: ParamValueJson | undefined;
+  onChange: (v: ParamValueJson | null) => void;
+}) {
+  const k = param.kind;
+  if (k === "date") {
+    return (
+      <DateOrDynamicInput
+        value={typeof value === "string" ? value : ""}
+        onChange={(s) => onChange(s || null)}
+      />
+    );
+  }
+  if (k === "number") {
+    return (
+      <input
+        type="number"
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="milhouse-field text-sm w-full font-mono"
+        placeholder="(sin default)"
+      />
+    );
+  }
+  if (k === "text") {
+    return (
+      <input
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="milhouse-field text-sm w-full"
+        placeholder="(sin default)"
+      />
+    );
+  }
+  if (k === "boolean") {
+    return (
+      <select
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="milhouse-field text-sm w-full"
+      >
+        <option value="">(sin default)</option>
+        <option value="1">Sí</option>
+        <option value="0">No</option>
+      </select>
+    );
+  }
+  // list_number / list_text
+  return (
+    <textarea
+      value={Array.isArray(value) ? value.join("\n") : ""}
+      onChange={(e) => {
+        const arr = e.target.value
+          .split(/[\n,;]+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        onChange(arr.length === 0 ? null : arr);
+      }}
+      rows={2}
+      placeholder="Un valor por línea (opcional, default)"
+      className="milhouse-field text-xs w-full font-mono"
+    />
+  );
+}
+
+/**
+ * Input para kind=date que permite alternar entre:
+ *   - fecha fija (date picker → "YYYY-MM-DD")
+ *   - expresión dinámica (`today`, `yesterday`, `today - 20d`, etc).
+ *
+ * Cuando es dinámica, debajo del input se muestra el valor resuelto
+ * contra el día de hoy.
+ */
+export function DateOrDynamicInput({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const isDyn = !looksLikeIsoDate(value);
+  const [mode, setMode] = useState<"fixed" | "dynamic">(
+    isDyn && value ? "dynamic" : "fixed",
+  );
+  return (
+    <div className="space-y-1">
+      <div className="flex items-stretch gap-1">
+        <div className="flex border border-surface-strong rounded overflow-hidden text-[10px]">
+          <button
+            type="button"
+            onClick={() => setMode("fixed")}
+            className={`px-2 ${mode === "fixed" ? "bg-accent-token font-semibold" : "bg-surface"}`}
+            title="Fecha fija"
+          >
+            📅 Fija
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("dynamic")}
+            className={`px-2 ${mode === "dynamic" ? "bg-accent-token font-semibold" : "bg-surface"}`}
+            title="Expresión dinámica (ej. today, today - 20d, start_of_month)"
+          >
+            ⏱ Dinámica
+          </button>
+        </div>
+        {mode === "fixed" ? (
+          <input
+            type="date"
+            value={looksLikeIsoDate(value) ? value : ""}
+            onChange={(e) => onChange(e.target.value)}
+            className="milhouse-field text-sm flex-1"
+          />
+        ) : (
+          <input
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="today, today - 20d, start_of_month, ..."
+            className="milhouse-field text-xs font-mono flex-1"
+          />
+        )}
+      </div>
+      {mode === "dynamic" && value.trim() && (
+        <div className="text-[10px] text-dim ml-1">
+          {(() => {
+            const resolved = previewDynamicDate(value);
+            return resolved
+              ? `→ resuelve a ${resolved} (hoy)`
+              : `⚠ no se pudo resolver — chequeá la sintaxis`;
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function looksLikeIsoDate(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+/**
+ * Resuelve una expresión dinámica de fecha contra hoy. Espejado del
+ * parser de `src/engine/dyn_dates.rs`. Devuelve "YYYY-MM-DD" o null.
+ */
+export function previewDynamicDate(s: string): string | null {
+  const trimmed = s.trim().toLowerCase();
+  if (!trimmed) return null;
+  const today = new Date();
+  // Buscar `+` o `-` como separador (no el primer carácter).
+  let opIdx = -1;
+  for (let i = 1; i < trimmed.length; i++) {
+    const c = trimmed[i];
+    if (c === "+" || c === "-") {
+      opIdx = i;
+      break;
+    }
+  }
+  const tokenStr = (opIdx < 0 ? trimmed : trimmed.slice(0, opIdx)).trim();
+  const base = resolveToken(tokenStr, today);
+  if (!base) return null;
+  if (opIdx < 0) return fmt(base);
+  const op = trimmed[opIdx];
+  const rest = trimmed.slice(opIdx + 1).trim();
+  const amount = parseAmount(rest);
+  if (!amount) return null;
+  const signed = op === "-" ? -amount.n : amount.n;
+  const next = applyAmount(base, signed, amount.unit);
+  return next ? fmt(next) : null;
+}
+
+function resolveToken(token: string, today: Date): Date | null {
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  switch (token) {
+    case "today":
+    case "hoy":
+      return new Date(y, m, today.getDate());
+    case "yesterday":
+    case "ayer":
+      return new Date(y, m, today.getDate() - 1);
+    case "tomorrow":
+    case "manana":
+    case "mañana":
+      return new Date(y, m, today.getDate() + 1);
+    case "start_of_month":
+    case "inicio_de_mes":
+    case "inicio_mes":
+      return new Date(y, m, 1);
+    case "end_of_month":
+    case "fin_de_mes":
+    case "fin_mes":
+      return new Date(y, m + 1, 0);
+    case "start_of_year":
+    case "inicio_de_anio":
+    case "inicio_anio":
+      return new Date(y, 0, 1);
+    case "end_of_year":
+    case "fin_de_anio":
+    case "fin_anio":
+      return new Date(y, 11, 31);
+    default:
+      return null;
+  }
+}
+
+function parseAmount(
+  s: string,
+): { n: number; unit: "d" | "m" | "y" } | null {
+  const trimmed = s.trim().replace(/s$/, "");
+  const last = trimmed.slice(-1);
+  let num: string;
+  let unit: "d" | "m" | "y";
+  if (/[a-z]/.test(last)) {
+    if (last !== "d" && last !== "m" && last !== "y") return null;
+    unit = last;
+    num = trimmed.slice(0, -1).trim();
+  } else {
+    unit = "d";
+    num = trimmed;
+  }
+  const n = parseInt(num, 10);
+  if (!Number.isFinite(n)) return null;
+  return { n, unit };
+}
+
+function applyAmount(
+  base: Date,
+  n: number,
+  unit: "d" | "m" | "y",
+): Date | null {
+  const y = base.getFullYear();
+  const m = base.getMonth();
+  const d = base.getDate();
+  if (unit === "d") return new Date(y, m, d + n);
+  if (unit === "m") {
+    const target = new Date(y, m + n, d);
+    // Si el día no existe en el mes destino (ej. 31 -> feb), JS hace
+    // overflow al mes siguiente. Forzamos último día del mes destino.
+    if (target.getMonth() !== ((m + n) % 12 + 12) % 12) {
+      return new Date(y, m + n + 1, 0);
+    }
+    return target;
+  }
+  return new Date(y + n, m, d);
+}
+
+function fmt(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }

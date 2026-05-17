@@ -40,6 +40,17 @@
       "parent_group": null
     }
   ],
+  "parameters": [],
+  "presets": [],
+  "selected_global_params": [],
+  "run_defaults": {},
+  "api": {
+    "exposed": false,
+    "token": null,
+    "export_datasets": [],
+    "accept_parameters": false
+  },
+  "settings": {},
   "steps": [
     {
       "step_uid": 1,
@@ -63,7 +74,7 @@
       "dataset_name": null,
       "kind": "sql_query",
       "query": "SELECT id AS currency_id, code, symbol, rate_to_usd FROM currencies",
-      "connection": null,
+      "connection": "main",
       "output_table": "currencies"
     },
     {
@@ -77,7 +88,7 @@
       "dataset_name": null,
       "kind": "sql_query",
       "query": "SELECT id AS category_id, name AS category_name, parent_id FROM categories",
-      "connection": null,
+      "connection": "main",
       "output_table": "categories"
     },
     {
@@ -91,7 +102,7 @@
       "dataset_name": null,
       "kind": "sql_query",
       "query": "SELECT id AS account_id, owner_name, country AS account_country, currency_id AS account_currency_id, opened_at FROM accounts",
-      "connection": null,
+      "connection": "main",
       "output_table": "accounts"
     },
     {
@@ -105,7 +116,7 @@
       "dataset_name": null,
       "kind": "sql_query",
       "query": "SELECT tx_id, account_id, category_id, amount, currency_id, timestamp, country, status FROM tx_recent",
-      "connection": null,
+      "connection": "main",
       "output_table": "tx_raw"
     },
     {

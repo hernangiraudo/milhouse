@@ -19,9 +19,21 @@
       "description": null
     },
     {
-      "name": "IncluirComitentesPrex",
+      "name": "ComitentesPrex",
       "kind": "boolean",
-      "label": "Elegir \"Sí\" para dejar afuera a comitentes con ID entre 300M y 400M",
+      "label": "Incluir Comitentes Prex",
+      "description": null
+    },
+    {
+      "name": "ComitentesCarteraPropia",
+      "kind": "boolean",
+      "label": "Incluir Comitentes Cartera Propia únicamente",
+      "description": null
+    },
+    {
+      "name": "ComitentesCarteraClientes",
+      "kind": "boolean",
+      "label": "Incluir Comitentes Cartera de Clientesx únicamente",
       "description": null
     }
   ],

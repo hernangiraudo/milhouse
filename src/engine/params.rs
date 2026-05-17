@@ -219,6 +219,21 @@ fn render_param(name: &str, params: &ResolvedParams, out_so_far: &str) -> Result
             _ => true,
         };
         let in_context = detect_in_context(out_so_far);
+        // Si es date y el valor es una expresión dinámica (`today`,
+        // `yesterday`, `today - 20d`, etc), la resolvemos contra hoy
+        // antes de renderizar. Si el valor ya es una fecha literal
+        // YYYY-MM-DD, try_resolve devuelve None y usamos el valor crudo.
+        if matches!(kind, Some(ParamKind::Date)) {
+            if let ParamValue::Single(raw) = value {
+                if let Some(resolved) =
+                    crate::engine::dyn_dates::try_resolve(raw)
+                {
+                    let s = resolved.format("%Y-%m-%d").to_string();
+                    let resolved_value = ParamValue::Single(s);
+                    return Ok(resolved_value.render_sql(quote, in_context));
+                }
+            }
+        }
         return Ok(value.render_sql(quote, in_context));
     }
     if let Some(c) = params.constants.get(name) {
@@ -273,6 +288,7 @@ mod tests {
                 kind: ParamKind::Date,
                 label: None,
                 description: None,
+                default: None,
             }],
             vec![(
                 "FechaDesde",
@@ -291,6 +307,7 @@ mod tests {
                 kind: ParamKind::ListNumber,
                 label: None,
                 description: None,
+                default: None,
             }],
             vec![(
                 "Comitente",
@@ -316,6 +333,7 @@ mod tests {
                 kind: ParamKind::Text,
                 label: None,
                 description: None,
+                default: None,
             }],
             vec![("X", ParamValue::Single("hola".into()))],
         );

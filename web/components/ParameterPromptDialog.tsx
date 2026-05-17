@@ -8,6 +8,7 @@ import type {
 } from "./DesignEditor";
 import { parseExcelForParam } from "@/lib/api";
 import { useDialog } from "./Dialog";
+import { DateOrDynamicInput } from "./ParametersPanel";
 
 /**
  * Diálogo que aparece al ejecutar un proyecto que declara `parameters`.
@@ -342,11 +343,9 @@ function ValueEditor({
   return (
     <div>
       {k === "date" && (
-        <input
-          type="date"
+        <DateOrDynamicInput
           value={typeof value === "string" ? value : ""}
-          onChange={(e) => onChange(e.target.value || null)}
-          className="milhouse-field text-sm w-full"
+          onChange={(s) => onChange(s || null)}
         />
       )}
       {k === "number" && (

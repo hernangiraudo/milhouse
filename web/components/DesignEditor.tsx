@@ -28,7 +28,7 @@ import { useUser } from "@/lib/session";
 import { LogsPanel } from "./LogsPanel";
 import { SamplePanel } from "./SamplePanel";
 import type { LogLine, TableSample } from "@/lib/types";
-import { ParametersPanel } from "./ParametersPanel";
+import { ParametersPanel, DateOrDynamicInput } from "./ParametersPanel";
 import { RunQueuePanel } from "./RunQueuePanel";
 import { ParameterPromptDialog } from "./ParameterPromptDialog";
 import { ApiExposurePanel } from "./ApiExposurePanel";
@@ -46,6 +46,11 @@ export interface ParamSpec {
   kind: ParamKind;
   label?: string | null;
   description?: string | null;
+  /** Valor por default del parámetro. Fallback final si el usuario no
+   *  responde y el proyecto no tiene run_defaults para este nombre.
+   *  Para kind=date, puede ser una expresión dinámica como "today",
+   *  "today - 20d", "start_of_month", "end_of_month", etc. */
+  default?: ParamValueJson | null;
 }
 
 export type ParamValueJson = string | string[];
@@ -2191,11 +2196,9 @@ function RunDefaultEditor({
   const list = k === "list_number" || k === "list_text";
   if (k === "date") {
     return (
-      <input
-        type="date"
+      <DateOrDynamicInput
         value={typeof value === "string" ? value : ""}
-        onChange={(e) => onChange(e.target.value || null)}
-        className="milhouse-field text-sm w-full"
+        onChange={(s) => onChange(s || null)}
       />
     );
   }

@@ -85,11 +85,19 @@ pub async fn run_project(
         }
     }
 
-    // Aplicar run_defaults del proyecto como fallback.
+    // Cadena de fallbacks: request > run_defaults del proyecto >
+    // ParamSpec.default. Mismo orden que en `/api/jobs`.
     for (name, value) in &cfg.run_defaults {
         parameters
             .entry(name.clone())
             .or_insert_with(|| value.clone());
+    }
+    for p in &cfg.parameters {
+        if let Some(def) = &p.default {
+            parameters
+                .entry(p.name.clone())
+                .or_insert_with(|| def.clone());
+        }
     }
 
     // Validar que cualquier :param referenciado tenga valor (mismo check
