@@ -877,6 +877,14 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **`list_schedules` tolera `run_store` ausente**: si la DB de runs no
+  está disponible (conexión `runs` faltante o archivo lockeado por
+  otro `milhouse.exe`), devuelve `{schedules: []}` en vez de HTTP 503.
+  Permite seguir usando la UI de Planificación para crear schedules
+  contra los proyectos disponibles. `SchedulesPanel.reload` ahora usa
+  `Promise.allSettled` así un error en una llamada no anula la otra
+  (antes con `Promise.all`, un 503 en listSchedules dejaba `configs`
+  vacío y la UI mostraba "no hay proyectos" aunque sí hubiera).
 - **Selector explícito de parámetro destino al importar Excel**: ahora
   al apretar "📂 Importar Excel" aparece un modal previo al asistente
   con `<select>` "¿A qué parámetro aplicar la respuesta?" mostrando
