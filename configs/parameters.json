@@ -5,48 +5,54 @@
       "kind": "date",
       "label": "Fecha desde",
       "description": null,
-      "default": "2025-12-31"
+      "default": "2025-12-31",
+      "category": "dates"
     },
     {
       "name": "FechaHasta",
       "kind": "date",
       "label": "Fecha Hasta",
       "description": null,
-      "default": "today - 1"
+      "default": "today - 1",
+      "category": "dates"
     },
     {
       "name": "Comitente",
       "kind": "number",
       "label": "Número de Comitente",
-      "description": null
+      "description": null,
+      "category": "comitentes"
     },
     {
       "name": "ComitentesPrex",
       "kind": "boolean",
       "label": "Incluir Comitentes Prex",
       "description": null,
-      "default": "0"
+      "default": "0",
+      "category": "comitentes"
     },
     {
       "name": "ComitentesCarteraPropia",
       "kind": "boolean",
       "label": "Incluir Comitentes Cartera Propia únicamente",
-      "description": null
+      "description": null,
+      "category": "comitentes"
     },
     {
       "name": "ComitentesCarteraClientes",
       "kind": "boolean",
       "label": "Incluir Comitentes Cartera de Clientes únicamente",
-      "description": null
+      "description": null,
+      "category": "comitentes"
     }
   ],
   "presets": [
     {
       "name": "YTD",
-      "description": "Year to Date 2026",
+      "description": "Desde el 31 de diciembre de 2025 hasta ayer",
       "values": {
-        "FechaHasta": "2026-05-15",
-        "FechaDesde": "2025-12-31"
+        "FechaDesde": "2025-12-31",
+        "FechaHasta": "today -1"
       }
     },
     {

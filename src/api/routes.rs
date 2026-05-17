@@ -334,6 +334,164 @@ pub async fn put_global_constants(
     Ok(Json(json!({ "status": "ok" })))
 }
 
+/// Preview de las hojas y primeras filas de un xlsx. Usado por el
+/// asistente de importación de respuestas guardadas — el usuario elige
+/// hoja, columna de ID y columnas descriptivas antes de persistir.
+pub async fn excel_preview(
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use calamine::{open_workbook_from_rs, Reader, Xlsx};
+    let cursor = std::io::Cursor::new(body.to_vec());
+    let mut workbook: Xlsx<_> = open_workbook_from_rs(cursor)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("xlsx inválido: {e}")))?;
+    let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
+    let mut previews: Vec<Value> = Vec::with_capacity(sheet_names.len());
+    for sn in &sheet_names {
+        let Ok(range) = workbook.worksheet_range(sn) else {
+            continue;
+        };
+        let total_rows = range.rows().count();
+        let total_cols = range
+            .rows()
+            .next()
+            .map(|r| r.len())
+            .unwrap_or(0);
+        // Limit preview a 20 filas.
+        let rows: Vec<Vec<String>> = range
+            .rows()
+            .take(20)
+            .map(|r| r.iter().map(excel_cell_to_string).collect())
+            .collect();
+        previews.push(json!({
+            "sheet": sn,
+            "rows": rows,
+            "total_rows": total_rows,
+            "total_cols": total_cols,
+        }));
+    }
+    Ok(Json(json!({
+        "sheets": sheet_names,
+        "previews": previews,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ExcelImportReq {
+    /// Nombre de la hoja a leer.
+    pub sheet: String,
+    /// Índice (0-based) de la columna con el ID.
+    pub id_column: usize,
+    /// Índices de las columnas descriptivas a guardar como metadata.
+    #[serde(default)]
+    pub description_columns: Vec<usize>,
+    /// Si true, salta la 1ª fila tratándola como encabezado.
+    #[serde(default)]
+    pub skip_header: bool,
+    /// Bytes del xlsx en base64 (para no tener que subir dos veces).
+    pub xlsx_base64: String,
+}
+
+/// Importa valores + tabla descriptiva del xlsx según las elecciones
+/// del usuario en el asistente. Devuelve `{values, description_table}`
+/// listos para guardar en un ParamPreset.
+pub async fn excel_import(
+    Json(req): Json<ExcelImportReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    use base64::Engine;
+    use calamine::{open_workbook_from_rs, Reader, Xlsx};
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&req.xlsx_base64)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("base64 inválido: {e}")))?;
+    let cursor = std::io::Cursor::new(bytes);
+    let mut workbook: Xlsx<_> = open_workbook_from_rs(cursor)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("xlsx inválido: {e}")))?;
+    let range = workbook
+        .worksheet_range(&req.sheet)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("hoja `{}`: {e}", req.sheet)))?;
+
+    // Headers (si skip_header=true, primera fila).
+    let mut all_rows = range.rows();
+    let mut headers: Vec<String> = Vec::new();
+    if req.skip_header {
+        if let Some(first) = all_rows.next() {
+            headers = first.iter().map(excel_cell_to_string).collect();
+        }
+    }
+    if headers.is_empty() {
+        // Encabezados sintéticos "col 1", "col 2", ... según la columna ID y descs.
+        let max_col = std::iter::once(req.id_column)
+            .chain(req.description_columns.iter().copied())
+            .max()
+            .unwrap_or(0);
+        headers = (0..=max_col).map(|i| format!("col {}", i + 1)).collect();
+    }
+
+    // Construir description_table con encabezado + filas.
+    let mut values: Vec<String> = Vec::new();
+    let mut desc_table: Vec<Vec<String>> = Vec::new();
+    // Header row de la tabla.
+    let mut header_row: Vec<String> = Vec::new();
+    header_row.push(
+        headers
+            .get(req.id_column)
+            .cloned()
+            .unwrap_or_else(|| format!("col {}", req.id_column + 1)),
+    );
+    for &c in &req.description_columns {
+        header_row.push(
+            headers
+                .get(c)
+                .cloned()
+                .unwrap_or_else(|| format!("col {}", c + 1)),
+        );
+    }
+    desc_table.push(header_row);
+
+    for row in all_rows {
+        let id_cell = row.get(req.id_column);
+        let id_value = id_cell.map(excel_cell_to_string).unwrap_or_default();
+        if id_value.trim().is_empty() {
+            continue;
+        }
+        values.push(id_value.clone());
+        let mut desc_row: Vec<String> = vec![id_value];
+        for &c in &req.description_columns {
+            desc_row.push(
+                row.get(c)
+                    .map(excel_cell_to_string)
+                    .unwrap_or_default(),
+            );
+        }
+        desc_table.push(desc_row);
+    }
+
+    Ok(Json(json!({
+        "values": values,
+        "description_table": desc_table,
+        "rows_total": values.len(),
+    })))
+}
+
+fn excel_cell_to_string(cell: &calamine::Data) -> String {
+    use calamine::Data;
+    match cell {
+        Data::Empty => String::new(),
+        Data::String(s) => s.trim().to_string(),
+        Data::Float(f) => {
+            if (f.fract()).abs() < f64::EPSILON {
+                format!("{}", *f as i64)
+            } else {
+                f.to_string()
+            }
+        }
+        Data::Int(i) => i.to_string(),
+        Data::Bool(b) => b.to_string(),
+        Data::DateTime(d) => d.to_string(),
+        Data::Error(_) => String::new(),
+        Data::DateTimeIso(s) | Data::DurationIso(s) => s.trim().to_string(),
+    }
+}
+
 pub async fn parse_excel_for_param(
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, (StatusCode, String)> {

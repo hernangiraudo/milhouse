@@ -158,6 +158,14 @@ async fn main() -> anyhow::Result<()> {
             post(routes::parse_excel_for_param),
         )
         .route(
+            "/api/parameters/excel-preview",
+            post(routes::excel_preview),
+        )
+        .route(
+            "/api/parameters/excel-import",
+            post(routes::excel_import),
+        )
+        .route(
             "/api/parameters",
             get(routes::get_global_params).put(routes::put_global_params),
         )

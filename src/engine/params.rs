@@ -234,6 +234,25 @@ fn render_param(name: &str, params: &ResolvedParams, out_so_far: &str) -> Result
                 }
             }
         }
+        // Si es Number y el valor contiene comas o puntos y coma,
+        // splitamos a lista. Permite que el usuario escriba "1,2,3" o
+        // "1; 2; 3" en un input de tipo Number y se renderice como
+        // `IN (1, 2, 3)` (en contexto IN) o `1, 2, 3` (fuera).
+        if matches!(kind, Some(ParamKind::Number)) {
+            if let ParamValue::Single(raw) = value {
+                if raw.contains(',') || raw.contains(';') {
+                    let parts: Vec<String> = raw
+                        .split(|c: char| c == ',' || c == ';')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if parts.len() > 1 {
+                        let as_list = ParamValue::List(parts);
+                        return Ok(as_list.render_sql(quote, in_context));
+                    }
+                }
+            }
+        }
         return Ok(value.render_sql(quote, in_context));
     }
     if let Some(c) = params.constants.get(name) {
@@ -318,6 +337,26 @@ mod tests {
         );
         let out = substitute("WHERE id IN (:Comitente)", &p).unwrap();
         assert_eq!(out, "WHERE id IN (1, 2, 3)");
+    }
+
+    #[test]
+    fn number_with_commas_expands_as_list() {
+        let p = rp(
+            vec![ParamSpec {
+                name: "Ids".into(),
+                kind: ParamKind::Number,
+                label: None,
+                description: None,
+                default: None,
+                category: crate::config::ParamCategory::Other,
+            }],
+            vec![(
+                "Ids",
+                ParamValue::Single("10, 20; 30".into()),
+            )],
+        );
+        let out = substitute("WHERE id IN (:Ids)", &p).unwrap();
+        assert_eq!(out, "WHERE id IN (10, 20, 30)");
     }
 
     #[test]

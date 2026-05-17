@@ -135,6 +135,69 @@ export async function parseExcelForParam(file: File): Promise<{
   return r.json();
 }
 
+export interface ExcelPreview {
+  sheets: string[];
+  previews: Array<{
+    sheet: string;
+    rows: string[][];
+    total_rows: number;
+    total_cols: number;
+  }>;
+}
+
+/** Preview de hojas + primeras filas de un xlsx. */
+export async function excelPreview(file: File): Promise<ExcelPreview> {
+  const r = await fetch(`${API_BASE}/api/parameters/excel-preview`, {
+    method: "POST",
+    headers: {
+      "content-type":
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    },
+    body: file,
+  });
+  if (!r.ok) throw new Error(`excelPreview ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+/** Importa valores + description_table según la selección del asistente. */
+export async function excelImport(req: {
+  xlsx_base64: string;
+  sheet: string;
+  id_column: number;
+  description_columns: number[];
+  skip_header: boolean;
+}): Promise<{
+  values: string[];
+  description_table: string[][];
+  rows_total: number;
+}> {
+  const r = await fetch(`${API_BASE}/api/parameters/excel-import`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`excelImport ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+/** Lee un File como base64 (sin el prefix data:...). */
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("FileReader devolvió un tipo inesperado"));
+        return;
+      }
+      const idx = result.indexOf(",");
+      resolve(idx >= 0 ? result.slice(idx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("file read error"));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function exportRunBundleUrl(jobId: string): string {
   return `${API_BASE}/api/runs/${encodeURIComponent(jobId)}/bundle`;
 }

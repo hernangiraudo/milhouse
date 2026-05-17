@@ -231,12 +231,26 @@ declarada globalmente.
 
 `ParamSpec`: `{name, kind, label?, description?, default?, category?}`
 donde kind = `date | number | text | boolean | list_number | list_text`
-y category = `dates | comitentes | abreviaturas | execution | other`.
-`default` es el fallback final si nadie respondió el parámetro al
-ejecutar. `category` agrupa visualmente en `ParametersPanel` y en el
-prompt al ejecutar — no afecta el backend de ejecución.
-`ParamPreset`: `{name, description?, values: {paramName: ParamValue}}`
-para guardar respuestas (ej. "Year to Date" setea FechaDesde+FechaHasta).
+(las dos `list_*` quedan como legacy: el selector de la UI solo muestra
+las 4 primeras; si un config viejo tiene un `list_*` se preserva con
+tag "(legacy)" en el select) y category = `dates | comitentes |
+abreviaturas | execution | other`. `default` es el fallback final si
+nadie respondió el parámetro al ejecutar. `category` agrupa visualmente
+en `ParametersPanel` y en el prompt al ejecutar — no afecta el backend
+de ejecución.
+
+**`number` admite lista de IDs**: si el valor de un `kind=Number` viene
+con separadores `,` o `;`, el motor lo splittea como lista al sustituir
+en SQL (expansión en `IN (...)` igual que `ListNumber`). UI: input
+`type=text inputMode=decimal` con hint "Un ID o varios separados por
+coma/punto y coma" + auto-formato a `"101, 102, 103"` con espacios al
+perder foco. Pensado para listas de IDs (enteros, sin decimales).
+
+`ParamPreset`: `{name, description?, values: {paramName: ParamValue},
+description_table?: [[headers], [row1], ...]}`. `description_table` es
+metadata opcional que aparece cuando el preset se cargó desde un Excel
+con columnas descriptivas (ID + Nombre, por ej.). El motor sólo usa
+`values`; la tabla se muestra en la UI al expandir el preset.
 `PresetGroup`: `{name, description?, preset_names: [string]}` — grupos
 de respuestas (globales, en `parameters.json`). Al ejecutar, elegir un
 grupo aplica todos sus presets en orden (último gana por colisión).
@@ -391,6 +405,11 @@ POST   /api/sql/check                              valida sintaxis sin
 GET    /api/parameters                              parámetros + presets globales
 PUT    /api/parameters                              reemplaza todo + persiste
 POST   /api/parameters/parse-excel                 lee 1ª columna del xlsx
+POST   /api/parameters/excel-preview                hojas + preview de filas
+                                                    (usado por el asistente
+                                                    de importación)
+POST   /api/parameters/excel-import                 import con hoja/columna
+                                                    elegidas + description_table
 GET    /api/constants                               constantes globales {groups, constants}
 PUT    /api/constants                               reemplaza todo + persiste
 POST   /api/ai/build-step                          NL → step JSON
@@ -858,6 +877,32 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **Asistente de import Excel** (`ExcelImportDialog`): modal con
+  selector de hoja, preview de las primeras 20 filas, columna de ID
+  (la que se filtra en SQL), columnas descriptivas opcionales,
+  auto-detección de "1ª fila es encabezado" (toggle override). Nuevos
+  endpoints `POST /api/parameters/excel-preview` y `/excel-import`
+  (recibe xlsx en base64 + selección). Devuelve `{values,
+  description_table}` para persistir en el preset.
+- **`ParamPreset.description_table`**: metadata `Vec<Vec<String>>`
+  opcional (header + filas) con la tabla descriptiva del Excel. Se
+  muestra en `<details>` al expandir el preset. El motor sólo usa
+  `values`.
+- **`number` admite lista de IDs**: en SQL se splittea `"1,2,3"` o
+  `"1; 2; 3"` como lista (expansión en `IN(...)`). UI usa input text
+  con hint + auto-formato al perder foco. Test
+  `number_with_commas_expands_as_list`. Reemplaza la necesidad de
+  `list_number` en la mayoría de los casos.
+- **Listas fuera del selector de kind**: `list_number/list_text`
+  ocultas en la UI nueva. Si un config viejo los tiene, el select los
+  preserva con tag "(legacy)" para no perderlos al editar.
+- **Toggle "Mostrar tipo"** off por default en `ParametersPanel`
+  (tab Parámetros). El select de kind solo aparece cuando se prende
+  — la mayoría de usuarios no necesita cambiar el tipo.
+- **Categorías colapsables**: cada header de categoría (Fechas,
+  Comitentes, etc) es ahora un botón con caret `▾`/`▸`.
+- **Fix espacio "globales compartidas"** en `ExecParamsPanel` (JSX
+  colapsa whitespace; usar `{" "}`).
 - **Priority por step** (`StepPriority { Low, Normal, High }`, default
   `Normal`). El scheduler usa priority como orden estricto:
   primero los High, después Normal, después Low. Las dependencias del

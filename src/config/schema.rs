@@ -226,6 +226,13 @@ pub struct ParamPreset {
     pub description: Option<String>,
     /// Valores resueltos por nombre de parámetro.
     pub values: HashMap<String, ParamValue>,
+    /// Metadata opcional: tabla descriptiva [headers, ...rows]. Útil cuando
+    /// el preset se cargó desde un Excel con columnas de descripción
+    /// además del ID (ej. [["ID", "Nombre"], ["101", "Cliente A"], ...]).
+    /// El motor solo usa `values`; esto es para que el usuario vea en
+    /// la UI qué importó. Solo se guarda si hay datos.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub description_table: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

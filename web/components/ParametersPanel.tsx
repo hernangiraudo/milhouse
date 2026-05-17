@@ -10,6 +10,7 @@ import type {
   ParamSpec,
   ParamValueJson,
 } from "./DesignEditor";
+import { ExcelImportDialog } from "./ExcelImportDialog";
 
 const KIND_LABEL: Record<ParamKind, string> = {
   date: "Fecha",
@@ -19,6 +20,11 @@ const KIND_LABEL: Record<ParamKind, string> = {
   list_number: "Lista de números",
   list_text: "Lista de textos",
 };
+
+// Kinds que aparecen en el selector del editor. Las listas siguen
+// soportadas en el motor por compat con configs viejos — si un param
+// ya tiene kind=list_*, el select lo preserva via "current value".
+const KIND_OPTIONS: ParamKind[] = ["date", "number", "text", "boolean"];
 
 const CATEGORY_LABEL: Record<ParamCategory, string> = {
   dates: "Fechas",
@@ -69,6 +75,16 @@ export function ParametersPanel({
   const dialog = useDialog();
   const [tab, setTab] = useState<Tab>("parameters");
   const [expandedPreset, setExpandedPreset] = useState<number | null>(null);
+  // Categorías colapsadas en el tab Parámetros. Arrancan expandidas
+  // (set vacío) para que el editor se vea sin click extra; el usuario
+  // colapsa lo que no le interesa.
+  const [collapsedCategories, setCollapsedCategories] = useState<
+    Set<ParamCategory>
+  >(new Set());
+  // Switch para mostrar/ocultar el selector de "kind" en cada fila.
+  // Default off: pocos usuarios necesitan cambiar el tipo después de
+  // crear el param. Cuando alguien quiera, lo prende.
+  const [showKindEditor, setShowKindEditor] = useState(false);
   const [expandedGroup, setExpandedGroup] = useState<number | null>(null);
   const showGroupsTab = presetGroups != null && onChangeGroups != null;
 
@@ -194,42 +210,68 @@ export function ParametersPanel({
     setPresets(arr);
   }
 
-  async function importExcelAsPreset(file: File) {
-    const listParams = parameters.filter((p) => isListKind(p.kind));
-    if (listParams.length === 0) {
+  // Estado del asistente de Excel: cuando hay file pendiente, mostramos
+  // el modal. El parametroDestino se pidió antes de abrir el modal.
+  const [excelImport, setExcelImport] = useState<{
+    file: File;
+    targetParam: string;
+    targetKind: ParamKind;
+  } | null>(null);
+
+  // Parámetros que admiten importar listas:
+  //  - `number`: el motor splittea "1,2,3" como lista al sustituir.
+  //  - Legacy `list_number` / `list_text`: siguen funcionando si existen.
+  function isImportTarget(p: ParamSpec): boolean {
+    return p.kind === "number" || isListKind(p.kind);
+  }
+
+  async function startExcelImport(file: File) {
+    const candidates = parameters.filter(isImportTarget);
+    if (candidates.length === 0) {
       await dialog.alert(
-        "Necesitás al menos un parámetro de tipo lista (list_number o list_text) para importar valores.",
+        "Necesitás al menos un parámetro tipo Número para importar valores. Creá uno y volvé a intentar.",
         { variant: "warning" },
       );
       return;
     }
-    // Si hay varios parámetros de lista, preguntamos cuál asignar.
-    let chosenParam = listParams[0].name;
-    if (listParams.length > 1) {
+    let chosen = candidates[0];
+    if (candidates.length > 1) {
       const picked = await dialog.prompt(
-        `Hay ${listParams.length} parámetros de lista. ¿A cuál asignar los valores importados?\n\n${listParams
+        `¿A qué parámetro asignar los valores importados?\n\n${candidates
           .map((p) => `  • ${p.name} (${p.kind})`)
           .join("\n")}`,
         {
           title: "Parámetro destino",
-          defaultValue: listParams[0].name,
+          defaultValue: candidates[0].name,
           validate: (v) => {
             const t = v.trim();
             if (!t) return "obligatorio";
-            if (!listParams.some((p) => p.name === t))
-              return "ese parámetro no existe o no es de lista";
+            if (!candidates.some((p) => p.name === t))
+              return "ese parámetro no existe o no admite importación";
             return null;
           },
         },
       );
       if (!picked?.trim()) return;
-      chosenParam = picked.trim();
+      const found = candidates.find((p) => p.name === picked.trim());
+      if (!found) return;
+      chosen = found;
     }
+    setExcelImport({ file, targetParam: chosen.name, targetKind: chosen.kind });
+  }
+
+  async function finishExcelImport(
+    values: string[],
+    descriptionTable: string[][],
+  ) {
+    if (!excelImport) return;
+    const { file, targetParam, targetKind } = excelImport;
     const presetName = await dialog.prompt(
-      `Nombre para la respuesta que va a guardar los ${file.name ? "valores" : "valores importados"}:`,
+      `Nombre para la respuesta:`,
       {
-        title: "Importar Excel como respuesta",
+        title: "Guardar respuesta importada",
         placeholder: "ej. Comitentes activos · 2026-Q1",
+        defaultValue: file.name.replace(/\.xlsx?$/i, ""),
         validate: (v) => {
           const t = v.trim();
           if (!t) return "obligatorio";
@@ -239,30 +281,26 @@ export function ParametersPanel({
         },
       },
     );
-    if (!presetName?.trim()) return;
-    try {
-      const result = await parseExcelForParam(file);
-      const values = result.values;
-      if (values.length === 0) {
-        await dialog.alert(
-          "El Excel no tiene valores en la primera columna.",
-          { variant: "warning" },
-        );
-        return;
-      }
-      const newPreset: ParamPreset = {
-        name: presetName.trim(),
-        description: `Importado de ${file.name} (${values.length} valor${values.length === 1 ? "" : "es"})`,
-        values: { [chosenParam]: values },
-      };
-      setPresets([...presets, newPreset]);
-      setTab("presets");
-      setExpandedPreset(presets.length);
-    } catch (e) {
-      await dialog.alert(`No se pudo importar el Excel: ${e}`, {
-        variant: "danger",
-      });
+    if (!presetName?.trim()) {
+      setExcelImport(null);
+      return;
     }
+    // Serialización del valor según el kind del destino:
+    //  - number: lo guardamos como string "1,2,3" — el motor lo expande.
+    //  - list_*: array nativo.
+    const stored: ParamValueJson =
+      targetKind === "number" ? values.join(", ") : values;
+    const newPreset: ParamPreset = {
+      name: presetName.trim(),
+      description: `Importado de ${file.name} (${values.length} valor${values.length === 1 ? "" : "es"})`,
+      values: { [targetParam]: stored },
+      description_table:
+        descriptionTable.length > 0 ? descriptionTable : undefined,
+    };
+    setPresets([...presets, newPreset]);
+    setTab("presets");
+    setExpandedPreset(presets.length);
+    setExcelImport(null);
   }
 
   return (
@@ -296,12 +334,25 @@ export function ParametersPanel({
               Declará las variables que vas a usar en tus consultas como{" "}
               <code>:NombreDelParametro</code>.
             </p>
-            <button
-              onClick={addParam}
-              className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2"
-            >
-              + Nuevo parámetro
-            </button>
+            <div className="flex items-center gap-3">
+              <label
+                className="flex items-center gap-1.5 text-[11px] text-dim cursor-pointer select-none"
+                title="Mostrar el selector de tipo (Fecha/Número/Texto/Sí-No) en cada fila"
+              >
+                <input
+                  type="checkbox"
+                  checked={showKindEditor}
+                  onChange={(e) => setShowKindEditor(e.target.checked)}
+                />
+                <span>Mostrar tipo</span>
+              </label>
+              <button
+                onClick={addParam}
+                className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2"
+              >
+                + Nuevo parámetro
+              </button>
+            </div>
           </div>
 
           {parameters.length === 0 ? (
@@ -327,34 +378,57 @@ export function ParametersPanel({
                 <div className="space-y-3">
                   {CATEGORY_ORDER.filter(
                     (cat) => groups[cat].length > 0,
-                  ).map((cat) => (
+                  ).map((cat) => {
+                    const isCollapsed = collapsedCategories.has(cat);
+                    const dotColor =
+                      cat === "dates"
+                        ? "#22d3ee"
+                        : cat === "comitentes"
+                          ? "#a855f7"
+                          : cat === "abreviaturas"
+                            ? "#f59e0b"
+                            : cat === "execution"
+                              ? "#10b981"
+                              : "#64748b";
+                    return (
                     <div key={cat}>
-                      <h5 className="text-[10px] uppercase tracking-wider text-dim mb-1 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCollapsedCategories((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(cat)) next.delete(cat);
+                            else next.add(cat);
+                            return next;
+                          });
+                        }}
+                        className="w-full text-[10px] uppercase tracking-wider text-dim mb-1 flex items-center gap-2 hover:text-app text-left"
+                        title={isCollapsed ? "Expandir" : "Colapsar"}
+                      >
+                        <span className="text-[11px]">
+                          {isCollapsed ? "▸" : "▾"}
+                        </span>
                         <span
                           className="inline-block w-1.5 h-1.5 rounded-full"
-                          style={{
-                            background:
-                              cat === "dates"
-                                ? "#22d3ee"
-                                : cat === "comitentes"
-                                  ? "#a855f7"
-                                  : cat === "abreviaturas"
-                                    ? "#f59e0b"
-                                    : cat === "execution"
-                                      ? "#10b981"
-                                      : "#64748b",
-                          }}
+                          style={{ background: dotColor }}
                           aria-hidden
                         />
                         {CATEGORY_LABEL[cat]} · {groups[cat].length}
-                      </h5>
+                      </button>
+                      {!isCollapsed && (
                       <div className="space-y-1.5">
                         {groups[cat].map(({ p, idx }) => (
                           <div
                             key={idx}
                             className="bg-surface-2 border border-surface rounded p-2 space-y-1.5"
                           >
-                            <div className="grid grid-cols-[1fr_120px_120px_2fr_30px] gap-2 items-center">
+                            <div
+                              className={`grid gap-2 items-center ${
+                                showKindEditor
+                                  ? "grid-cols-[1fr_120px_120px_2fr_30px]"
+                                  : "grid-cols-[1fr_120px_2fr_30px]"
+                              }`}
+                            >
                               <input
                                 value={p.name}
                                 onChange={(e) =>
@@ -363,21 +437,31 @@ export function ParametersPanel({
                                 placeholder="Nombre (ej. FechaDesde)"
                                 className="milhouse-field text-sm font-mono"
                               />
-                              <select
-                                value={p.kind}
-                                onChange={(e) =>
-                                  updateParam(idx, {
-                                    kind: e.target.value as ParamKind,
-                                  })
-                                }
-                                className="milhouse-field text-sm"
-                              >
-                                {Object.entries(KIND_LABEL).map(([k, label]) => (
-                                  <option key={k} value={k}>
-                                    {label}
-                                  </option>
-                                ))}
-                              </select>
+                              {showKindEditor && (
+                                <select
+                                  value={p.kind}
+                                  onChange={(e) =>
+                                    updateParam(idx, {
+                                      kind: e.target.value as ParamKind,
+                                    })
+                                  }
+                                  className="milhouse-field text-sm"
+                                >
+                                  {KIND_OPTIONS.map((k) => (
+                                    <option key={k} value={k}>
+                                      {KIND_LABEL[k]}
+                                    </option>
+                                  ))}
+                                  {/* Si el param ya tiene un kind legacy
+                                     (list_*), lo preservamos en el select
+                                     para no perderlo sin querer al editar. */}
+                                  {!KIND_OPTIONS.includes(p.kind) && (
+                                    <option value={p.kind}>
+                                      {KIND_LABEL[p.kind]} (legacy)
+                                    </option>
+                                  )}
+                                </select>
+                              )}
                               <select
                                 value={getCategory(p)}
                                 onChange={(e) =>
@@ -430,8 +514,10 @@ export function ParametersPanel({
                           </div>
                         ))}
                       </div>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               );
             })()
@@ -461,7 +547,7 @@ export function ParametersPanel({
               >
                 + Nueva respuesta
               </button>
-              {parameters.some((p) => isListKind(p.kind)) && (
+              {parameters.some(isImportTarget) && (
                 <label
                   className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2 cursor-pointer"
                   title="Importar lista de valores desde Excel y guardarla como nueva respuesta"
@@ -475,7 +561,7 @@ export function ParametersPanel({
                       const f = e.target.files?.[0];
                       e.target.value = "";
                       if (!f) return;
-                      await importExcelAsPreset(f);
+                      await startExcelImport(f);
                     }}
                   />
                 </label>
@@ -555,6 +641,44 @@ export function ParametersPanel({
                       placeholder="Descripción (opcional)"
                       className="milhouse-field text-xs w-full"
                     />
+                    {pr.description_table && pr.description_table.length > 1 && (
+                      <details className="text-xs">
+                        <summary className="text-dim cursor-pointer hover:text-app">
+                          📋 Tabla descriptiva importada ·{" "}
+                          {pr.description_table.length - 1} fila(s)
+                        </summary>
+                        <div className="mt-1 overflow-auto max-h-48 border border-surface rounded">
+                          <table className="milhouse-data-table text-[11px]">
+                            <thead>
+                              <tr>
+                                {pr.description_table[0].map((h, ci) => (
+                                  <th
+                                    key={ci}
+                                    className="px-2 py-1 text-left font-mono"
+                                  >
+                                    {h}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pr.description_table.slice(1).map((row, ri) => (
+                                <tr key={ri}>
+                                  {row.map((cell, ci) => (
+                                    <td
+                                      key={ci}
+                                      className="px-2 py-1 font-mono whitespace-nowrap"
+                                    >
+                                      {cell}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </details>
+                    )}
                     <p className="text-[11px] text-dim">
                       Tildá los parámetros que esta respuesta responde. Los
                       que queden sin tildar quedan vacíos en la respuesta —
@@ -807,6 +931,16 @@ export function ParametersPanel({
           )}
         </div>
       )}
+
+      {excelImport && (
+        <ExcelImportDialog
+          file={excelImport.file}
+          onCancel={() => setExcelImport(null)}
+          onResolved={({ values, descriptionTable }) =>
+            finishExcelImport(values, descriptionTable)
+          }
+        />
+      )}
     </div>
   );
 }
@@ -859,12 +993,35 @@ function PresetParamRow({
           />
         )}
         {k === "number" && (
-          <input
-            type="number"
-            value={typeof value === "string" ? value : ""}
-            onChange={(e) => onChange(e.target.value || null)}
-            className="milhouse-field text-xs w-full font-mono"
-          />
+          <div className="space-y-1">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={typeof value === "string" ? value : ""}
+              onChange={(e) => onChange(e.target.value || null)}
+              onBlur={(e) => {
+                // Al perder el foco: si hay separadores, normalizamos
+                // a "id1, id2, id3" (con espacios) para facilitar lectura.
+                const raw = e.target.value;
+                if (raw.includes(",") || raw.includes(";")) {
+                  const parts = raw
+                    .split(/[,;]+/)
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+                  if (parts.length > 1) {
+                    const formatted = parts.join(", ");
+                    if (formatted !== raw) onChange(formatted);
+                  }
+                }
+              }}
+              placeholder="ej. 101  ó  101, 102, 103"
+              className="milhouse-field text-xs w-full font-mono"
+            />
+            <p className="text-[10px] text-dim">
+              Un ID, o varios separados por coma o punto y coma. Solo
+              enteros (los IDs no llevan decimales).
+            </p>
+          </div>
         )}
         {k === "text" && (
           <input
@@ -953,11 +1110,25 @@ function ParamDefaultEditor({
   if (k === "number") {
     return (
       <input
-        type="number"
+        type="text"
+        inputMode="decimal"
         value={typeof value === "string" ? value : ""}
         onChange={(e) => onChange(e.target.value || null)}
+        onBlur={(e) => {
+          const raw = e.target.value;
+          if (raw.includes(",") || raw.includes(";")) {
+            const parts = raw
+              .split(/[,;]+/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+            if (parts.length > 1) {
+              const formatted = parts.join(", ");
+              if (formatted !== raw) onChange(formatted);
+            }
+          }
+        }}
         className="milhouse-field text-sm w-full font-mono"
-        placeholder="(sin default)"
+        placeholder="(sin default; ej. 101 ó 101, 102)"
       />
     );
   }

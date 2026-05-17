@@ -68,6 +68,9 @@ export interface ParamPreset {
   name: string;
   description?: string | null;
   values: Record<string, ParamValueJson>;
+  /** Metadata opcional: tabla descriptiva [headers, ...rows] cuando el
+   *  preset se cargó desde un Excel con columnas de descripción. */
+  description_table?: string[][];
 }
 
 export interface ProjectApiConfig {
@@ -2511,12 +2514,32 @@ function RunDefaultEditor({
   }
   if (k === "number") {
     return (
-      <input
-        type="number"
-        value={typeof value === "string" ? value : ""}
-        onChange={(e) => onChange(e.target.value || null)}
-        className="milhouse-field text-sm w-full font-mono"
-      />
+      <div className="space-y-1">
+        <input
+          type="text"
+          inputMode="decimal"
+          value={typeof value === "string" ? value : ""}
+          onChange={(e) => onChange(e.target.value || null)}
+          onBlur={(e) => {
+            const raw = e.target.value;
+            if (raw.includes(",") || raw.includes(";")) {
+              const parts = raw
+                .split(/[,;]+/)
+                .map((s) => s.trim())
+                .filter(Boolean);
+              if (parts.length > 1) {
+                const formatted = parts.join(", ");
+                if (formatted !== raw) onChange(formatted);
+              }
+            }
+          }}
+          placeholder="ej. 101  ó  101, 102, 103"
+          className="milhouse-field text-sm w-full font-mono"
+        />
+        <p className="text-[10px] text-dim">
+          Un ID o varios separados por coma/punto y coma. Solo enteros.
+        </p>
+      </div>
     );
   }
   if (k === "text") {
