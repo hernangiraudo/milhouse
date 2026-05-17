@@ -287,11 +287,12 @@ async fn supervisor_and_scheduler(
 
     // Construir ResolvedParams una vez por job: specs del config + valores
     // del request + constantes globales. Compartido entre todos los
-    // StepContext via Arc.
-    let resolved_params = Arc::new(
+    // StepContext via Arc<RwLock<...>> para que los pasos procedurales
+    // puedan mutar valores y los pasos siguientes los vean.
+    let resolved_params = Arc::new(tokio::sync::RwLock::new(
         crate::engine::params::ResolvedParams::new(&cfg.parameters, options.params.clone())
             .with_constants(&options.constants),
-    );
+    ));
 
     let (tx, mut rx) = mpsc::channel::<StepUpdateMsg>(1024);
 

@@ -881,6 +881,31 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **Procedural con `input` opcional + mutación de params desde Rhai**:
+  ahora un step `procedural` puede declarar `input: null` (o omitirlo).
+  En ese caso el script corre **una sola vez** con `row` vacía — útil
+  para "preparar parámetros / construir SQL dinámicos" antes de un
+  paso SQL. Además el Map `params` que ve el script pasa a ser
+  mutable: si el script asigna `params.Filtro = "(GrupoID = 3)"`, el
+  StepContext se actualiza y los pasos siguientes ven `:Filtro` con
+  el nuevo valor al sustituir. Implementación:
+  - `StepSpec::Procedural.input: Option<String>` (antes obligatorio).
+    `output_table` reglas: si hay `output_table` usa eso; si no, si
+    hay `input` modifica in-place; si no, el step no produce tabla
+    (`StepOutcome::params_only`).
+  - `StepContext.params: Arc<RwLock<ResolvedParams>>` (antes `Arc`).
+    Los 3 call sites de `params::substitute` toman read lock; el
+    procedural toma write lock al finalizar para volcar mutaciones.
+  - `rhai_runner::run` devuelve `RhaiRunResult { df, param_mutations }`.
+    Mantiene un `params_map` mutable a través del loop (acumula los
+    cambios entre filas) y al final diffea contra el snapshot
+    inicial. Detecta también el caso `n == 0` (corre 1 vez con row
+    vacía y no exige que el script devuelva una row).
+  - El editor visual permite "Tabla input (opcional)" con placeholder
+    "(ninguna — solo manipular params)". El hint del script aclara
+    que `params` es mutable y se propaga a los siguientes pasos.
+  - Solo el engine Rhai expone mutación; Rust nativo recibe params
+    read-only como antes (no rompe la API del registry).
 - **Banner + botón deshabilitado en Planificación cuando falta la DB de
   runs**: nuevo endpoint `GET /api/runs/health → {available: bool}` y
   helper `runsHealth()` en `lib/api.ts`. `SchedulesPanel` chequea al

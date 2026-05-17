@@ -15,9 +15,9 @@
   ],
   "param_requirements": {
     "FechaHasta": "required",
-    "ComitentesCarteraPropia": "optional",
     "Comitente": "optional",
     "ComitentesCarteraClientes": "optional",
+    "ComitentesCarteraPropia": "optional",
     "ComitentesPrex": "optional",
     "FechaDesde": "required"
   },
@@ -40,6 +40,7 @@
       "group": null,
       "log_level": "info",
       "dataset_name": null,
+      "priority": "normal",
       "kind": "sql_query",
       "query": "SELECT * \nFROM CUENTA_CORRIENTE \nWHERE ( (1=1) AND (FechaConcertacion > '31-12-2024') AND (FechaConcertacion <= '08-12-2025') AND (ComitenteNumero IN (17215)))",
       "connection": "AllariaWeb-Prod",
@@ -52,6 +53,7 @@
       "group": null,
       "log_level": "info",
       "dataset_name": null,
+      "priority": "normal",
       "kind": "sql_query",
       "query": "SELECT * \nFROM CUPON \nWHERE ( (Fecha > '31-12-2024' AND Fecha <= '08-12-2025') AND (ComitenteNumero IN (17215)))",
       "connection": "AllariaWeb-Prod",
@@ -64,6 +66,7 @@
       "group": null,
       "log_level": "info",
       "dataset_name": null,
+      "priority": "normal",
       "kind": "sql_query",
       "query": "SELECT \"Abreviatura\",\n  \"AbreviaturaRelacionada\",\n  \"AbreviaturaID\",\n  \"AbreviaturaRelacionadaID\"\nFROM dbo.TN_ABREVIATURA_RELACIONADA",
       "connection": "AllariaWeb-Prod",
@@ -76,6 +79,7 @@
       "group": null,
       "log_level": "info",
       "dataset_name": null,
+      "priority": "normal",
       "kind": "sql_query",
       "query": "SELECT\n  \"TipoOperacion\",\n  \"TipoOperacionPEPS\",\n  \"TipoOperacionResultadoRenta\",\n  \"TipoOperacionResultadoDividendos\",\n  \"TipoOperacionPEPSorden\",\n  \"TipoOperacionResultadoEnaj\",\n  \"stdTipoOperacion\",\n  \"TipoOperacionBCRA7340ID\",\n  \"TipoOperacionBCRA7340\"\nFROM dbo.F03C_TIPO_OPERACION_PEPS",
       "connection": "AllariaWeb-DSA",
@@ -88,10 +92,28 @@
       "group": null,
       "log_level": "info",
       "dataset_name": null,
+      "priority": "normal",
       "kind": "sql_query",
       "query": "SELECT\n  \"AbreviaturaID\",\n  \"AbreviaturaFechaEjercicio\"\nFROM dbo.TN_ABREVIATURA_FECHA_EJERCICIO",
       "connection": "AllariaWeb-Prod",
       "output_table": "Fecha Ejercicio"
+    },
+    {
+      "step_uid": 6,
+      "id": "print_execution_params",
+      "depends_on": [],
+      "group": null,
+      "log_level": "info",
+      "dataset_name": null,
+      "priority": "normal",
+      "kind": "procedural",
+      "input": "Cuenta Corriente",
+      "engine": "rhai",
+      "script": "let row = this; let keys = map_keys(state); for key in keys { print(key + \": \" + state[key]); } row;",
+      "fn_name": null,
+      "params": null,
+      "state_init": {},
+      "output_table": null
     }
   ]
 }

@@ -4,16 +4,30 @@ use anyhow::{anyhow, Result};
 use polars::prelude::*;
 use rhai::{Dynamic, Engine, Map, Scope, AST};
 
-/// Ejecuta un script Rhai por cada fila. El script recibe:
-///   - `row`   : Map mutable de la fila (puede agregar/modificar campos)
-///   - `state` : Map mutable persistente entre filas (acumuladores)
+/// Resultado de ejecutar un script Rhai: el DataFrame de salida + las
+/// mutaciones que el script hizo sobre `params`. Los siguientes pasos
+/// del job verán esos valores al sustituir `:NombreParam` en SQL.
+pub struct RhaiRunResult {
+    pub df: DataFrame,
+    pub param_mutations: Vec<(String, ParamValue)>,
+}
+
+/// Ejecuta un script Rhai por cada fila (o una sola vez con DataFrame
+/// vacío). El script recibe:
+///   - `row`    : Map mutable de la fila (puede agregar/modificar campos)
+///   - `state`  : Map mutable persistente entre filas (acumuladores)
+///   - `params` : Map mutable con los parámetros del job. Las
+///                asignaciones se propagan a pasos siguientes.
 ///   - debe devolver la `row` (mutada o no)
+///
+/// Si el DataFrame está vacío, el script se ejecuta una sola vez con
+/// `row` vacía — útil para pasos que solo manipulan params/state.
 pub fn run(
     df: &DataFrame,
     script: &str,
     state_init: &serde_json::Value,
     ctx: &mut ProcCtx,
-) -> Result<DataFrame> {
+) -> Result<RhaiRunResult> {
     let mut engine = Engine::new();
     engine.set_max_operations(50_000_000);
     engine.set_max_expr_depths(64, 64);
@@ -28,11 +42,19 @@ pub fn run(
     // `params.NombreParametro` accesible desde el script. Coerciona al
     // tipo nativo según el kind del spec (boolean → int 1/0, number →
     // int o float, text → string, listas → array).
-    let params_map: Map = params_to_rhai_map(&ctx.params_resolved);
+    let initial_params_map: Map = params_to_rhai_map(&ctx.params_resolved);
+    // Mutable a través del loop: si el script asigna `params.X = ...`,
+    // las modificaciones quedan acumuladas y se aplican al StepContext
+    // al terminar.
+    let mut params_map: Map = initial_params_map.clone();
 
     let cols = df.get_columns();
     let col_names: Vec<String> = cols.iter().map(|s| s.name().to_string()).collect();
     let n = df.height();
+    // Si no hay filas, igual ejecutamos el script una vez con row vacía.
+    // Soporta el caso "preparar params dinámicos antes de un SQL".
+    let iters = n.max(1);
+    let run_once_only = n == 0;
 
     // Para construir el output sin saber todas las columnas finales por adelantado,
     // recolectamos las filas como vectores de (col_name, AnyValue) y luego lo
@@ -42,18 +64,20 @@ pub fn run(
     let mut out_rows: Vec<Vec<Dynamic>> = Vec::with_capacity(n);
 
     let mut scope = Scope::new();
-    let report_every = (n / 100).max(1000);
+    let report_every = (iters / 100).max(1000);
     let mut last_report = 0usize;
 
-    for i in 0..n {
+    for i in 0..iters {
         if i % 1024 == 0 && ctx.is_cancelled() {
             return Err(anyhow!("cancelled"));
         }
-        // build row map
+        // build row map (vacío si no hay filas reales)
         let mut row = Map::new();
-        for (idx, c) in cols.iter().enumerate() {
-            let v = c.get(i).map_err(|e| anyhow!("row {i} col {}: {e}", col_names[idx]))?;
-            row.insert(col_names[idx].clone().into(), anyvalue_to_dyn(v));
+        if !run_once_only {
+            for (idx, c) in cols.iter().enumerate() {
+                let v = c.get(i).map_err(|e| anyhow!("row {i} col {}: {e}", col_names[idx]))?;
+                row.insert(col_names[idx].clone().into(), anyvalue_to_dyn(v));
+            }
         }
 
         scope.clear();
@@ -65,30 +89,39 @@ pub fn run(
             .eval_ast_with_scope::<Dynamic>(&mut scope, &ast)
             .map_err(|e| anyhow!("rhai runtime error at row {i}: {e}"))?;
 
-        // tomar de vuelta el state mutado y la row resultante
+        // tomar de vuelta el state mutado, los params mutados y la row resultante
         if let Some(s) = scope.get_value::<Map>("state") {
             state = s;
+        }
+        if let Some(p) = scope.get_value::<Map>("params") {
+            params_map = p;
         }
         let row_map: Map = if returned.is_map() {
             returned.cast::<Map>()
         } else if let Some(r) = scope.get_value::<Map>("row") {
             r
+        } else if run_once_only {
+            // Sin DataFrame de entrada el script no necesita devolver row;
+            // tratamos la salida como Map vacío (no produce filas).
+            Map::new()
         } else {
             return Err(anyhow!("rhai script must return the row (a map)"));
         };
 
-        // descubrir nuevas columnas
-        for k in row_map.keys() {
-            if !out_columns.iter().any(|c| c == k.as_str()) {
-                out_columns.push(k.to_string());
+        if !run_once_only {
+            // descubrir nuevas columnas
+            for k in row_map.keys() {
+                if !out_columns.iter().any(|c| c == k.as_str()) {
+                    out_columns.push(k.to_string());
+                }
             }
-        }
 
-        let row_vec: Vec<Dynamic> = out_columns
-            .iter()
-            .map(|c| row_map.get(c.as_str()).cloned().unwrap_or(Dynamic::UNIT))
-            .collect();
-        out_rows.push(row_vec);
+            let row_vec: Vec<Dynamic> = out_columns
+                .iter()
+                .map(|c| row_map.get(c.as_str()).cloned().unwrap_or(Dynamic::UNIT))
+                .collect();
+            out_rows.push(row_vec);
+        }
 
         if i - last_report >= report_every {
             ctx.report_progress(i + 1);
@@ -97,18 +130,91 @@ pub fn run(
     }
     ctx.report_progress(n);
 
-    // Construir series por columna
-    let mut series_vec: Vec<Column> = Vec::with_capacity(out_columns.len());
-    for (col_idx, col_name) in out_columns.iter().enumerate() {
-        let any_values: Vec<AnyValue> = out_rows
-            .iter()
-            .map(|r| dyn_to_anyvalue(&r[col_idx]))
-            .collect();
-        let s = build_series_from_anyvalues(col_name, &any_values)?;
-        series_vec.push(s.into());
-    }
+    // Construir series por columna (DataFrame vacío si no había input).
+    let df_out = if run_once_only {
+        DataFrame::empty()
+    } else {
+        let mut series_vec: Vec<Column> = Vec::with_capacity(out_columns.len());
+        for (col_idx, col_name) in out_columns.iter().enumerate() {
+            let any_values: Vec<AnyValue> = out_rows
+                .iter()
+                .map(|r| dyn_to_anyvalue(&r[col_idx]))
+                .collect();
+            let s = build_series_from_anyvalues(col_name, &any_values)?;
+            series_vec.push(s.into());
+        }
+        DataFrame::new(series_vec)?
+    };
 
-    Ok(DataFrame::new(series_vec)?)
+    // Diff entre el snapshot inicial y los params resultantes: cualquier
+    // valor que cambió o se agregó se convierte a ParamValue para volcar
+    // al StepContext.
+    let param_mutations = diff_params(&initial_params_map, &params_map, &ctx.params_resolved);
+
+    Ok(RhaiRunResult {
+        df: df_out,
+        param_mutations,
+    })
+}
+
+/// Detecta cambios entre el snapshot inicial del Map params y el final.
+/// Para cada key que difiere (o que es nueva), construye un ParamValue
+/// según el kind declarado en specs (si existe) o asume Text si no.
+fn diff_params(
+    before: &Map,
+    after: &Map,
+    resolved: &ResolvedParamsForScripts,
+) -> Vec<(String, ParamValue)> {
+    let mut out = Vec::new();
+    for (k, v_after) in after.iter() {
+        let same = before.get(k).map(|b| dyn_eq(b, v_after)).unwrap_or(false);
+        if same {
+            continue;
+        }
+        let name = k.to_string();
+        let kind = resolved.specs.get(&name).map(|s| s.kind);
+        let pv = dyn_to_param_value(v_after, kind);
+        out.push((name, pv));
+    }
+    out
+}
+
+fn dyn_eq(a: &Dynamic, b: &Dynamic) -> bool {
+    // Comparación robusta: stringificar y comparar. Suficiente para
+    // detectar cambios; los falsos positivos solo causarían una
+    // reescritura innecesaria del mismo valor.
+    a.to_string() == b.to_string()
+}
+
+fn dyn_to_param_value(d: &Dynamic, kind: Option<ParamKind>) -> ParamValue {
+    use crate::config::ParamKind::*;
+    // Listas (Rhai array) → ParamValue::List independientemente del kind.
+    if let Some(arr) = d.clone().try_cast::<rhai::Array>() {
+        let items: Vec<String> = arr.iter().map(|x| dyn_to_string(x)).collect();
+        return ParamValue::List(items);
+    }
+    let s = match kind {
+        Some(Boolean) => {
+            // En Rhai, 0/1 o true/false → render SQL "1"/"0".
+            if let Some(b) = d.clone().try_cast::<bool>() {
+                if b { "1".to_string() } else { "0".to_string() }
+            } else if let Some(i) = d.clone().try_cast::<i64>() {
+                if i != 0 { "1".to_string() } else { "0".to_string() }
+            } else {
+                dyn_to_string(d)
+            }
+        }
+        _ => dyn_to_string(d),
+    };
+    ParamValue::Single(s)
+}
+
+fn dyn_to_string(d: &Dynamic) -> String {
+    if let Some(s) = d.clone().try_cast::<String>() {
+        s
+    } else {
+        d.to_string()
+    }
 }
 
 fn json_to_rhai_map(v: &serde_json::Value) -> Result<Map> {

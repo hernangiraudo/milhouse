@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     ctx: &StepContext,
-    input: &str,
+    input: Option<&str>,
     engine: ProceduralEngine,
     script: Option<&str>,
     fn_name: Option<&str>,
@@ -17,7 +17,12 @@ pub async fn run(
     state_init: &serde_json::Value,
     reporter: ProgressReporter,
 ) -> Result<DataFrame> {
-    let df = ctx.get_table(input).await?;
+    // Si no hay tabla input, arrancamos con un DataFrame vacío. Útil para
+    // pasos que solo manipulan params (preparar SQL dinámicos, etc).
+    let df: Arc<DataFrame> = match input {
+        Some(name) => ctx.get_table(name).await?,
+        None => Arc::new(DataFrame::empty()),
+    };
     let total = df.height();
     let cancel = ctx.cancel.clone();
     let script = script.map(|s| s.to_string());
@@ -25,18 +30,22 @@ pub async fn run(
     let params = params.clone();
     let state_init = state_init.clone();
 
-    // Snapshot de los parámetros del proyecto para que el script los
-    // exponga como `params.NombreDelParametro` (rhai) o ctx.params_resolved
-    // (rust). Específico de cada job: si cambian en runtime, la corrida
-    // ya está corriendo con el snapshot inicial.
-    let specs: Vec<crate::config::ParamSpec> =
-        ctx.params.specs.values().cloned().collect();
+    // Snapshot read-only de los parámetros del proyecto para que el script
+    // los exponga como `params.NombreDelParametro` (rhai) o
+    // ctx.params_resolved (rust). El lock se libera antes del
+    // spawn_blocking para no bloquear otros pasos.
+    let (specs_vec, values_snapshot) = {
+        let guard = ctx.params.read().await;
+        let specs: Vec<crate::config::ParamSpec> = guard.specs.values().cloned().collect();
+        (specs, guard.values.clone())
+    };
     let params_resolved = Arc::new(ResolvedParamsForScripts::new(
-        &specs,
-        &ctx.params.values,
+        &specs_vec,
+        &values_snapshot,
     ));
 
-    tokio::task::spawn_blocking(move || -> Result<DataFrame> {
+    let rhai_engine_used = matches!(engine, ProceduralEngine::Rhai);
+    let result = tokio::task::spawn_blocking(move || -> Result<ProceduralOutcome> {
         let mut proc_ctx = ProcCtx {
             cancel,
             reporter,
@@ -46,7 +55,11 @@ pub async fn run(
         match engine {
             ProceduralEngine::Rhai => {
                 let script = script.ok_or_else(|| anyhow!("missing script for rhai engine"))?;
-                rhai_runner::run(df.as_ref(), &script, &state_init, &mut proc_ctx)
+                let res = rhai_runner::run(df.as_ref(), &script, &state_init, &mut proc_ctx)?;
+                Ok(ProceduralOutcome {
+                    df: res.df,
+                    param_mutations: res.param_mutations,
+                })
             }
             ProceduralEngine::Rust => {
                 let fn_name = fn_name.ok_or_else(|| anyhow!("missing fn_name for rust engine"))?;
@@ -54,9 +67,30 @@ pub async fn run(
                 let f = registry
                     .get(fn_name.as_str())
                     .ok_or_else(|| anyhow!("rust procedural fn `{fn_name}` not registered"))?;
-                f.process(df.as_ref(), &params, &mut proc_ctx)
+                let df_out = f.process(df.as_ref(), &params, &mut proc_ctx)?;
+                Ok(ProceduralOutcome {
+                    df: df_out,
+                    param_mutations: Vec::new(),
+                })
             }
         }
     })
-    .await?
+    .await??;
+
+    // Si el script mutó params, escribimos los nuevos valores al
+    // StepContext. Los pasos siguientes (SQL u otros procedurales) van a
+    // sustituir `:Nombre` con el nuevo valor.
+    if rhai_engine_used && !result.param_mutations.is_empty() {
+        let mut guard = ctx.params.write().await;
+        for (name, value) in result.param_mutations {
+            guard.values.insert(name, value);
+        }
+    }
+
+    Ok(result.df)
+}
+
+struct ProceduralOutcome {
+    df: DataFrame,
+    param_mutations: Vec<(String, crate::config::ParamValue)>,
 }

@@ -30,7 +30,10 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             output_table,
             keep_time_columns,
         } => {
-            let q = params::substitute(query, &ctx.params)?;
+            let q = {
+                let guard = ctx.params.read().await;
+                params::substitute(query, &guard)?
+            };
             let df = sql_query::run(
                 ctx,
                 &q,
@@ -42,7 +45,10 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             StepOutcome::table(output_table.clone(), df)
         }
         StepSpec::SqlExec { query, connection } => {
-            let q = params::substitute(query, &ctx.params)?;
+            let q = {
+                let guard = ctx.params.read().await;
+                params::substitute(query, &guard)?
+            };
             let rows = sql_exec::run(ctx, &q, connection.as_deref(), reporter.clone()).await?;
             StepOutcome::exec_done(rows)
         }
@@ -85,7 +91,10 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
             output_table,
         } => {
             let substituted = match filter {
-                Some(f) => Some(params::substitute(f, &ctx.params)?),
+                Some(f) => {
+                    let guard = ctx.params.read().await;
+                    Some(params::substitute(f, &guard)?)
+                }
                 None => None,
             };
             let df = filter_subset::run(ctx, input, substituted.as_deref(), select).await?;
@@ -122,7 +131,7 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
         } => {
             let df = procedural::run(
                 ctx,
-                input,
+                input.as_deref(),
                 *engine,
                 script.as_deref(),
                 fn_name.as_deref(),
@@ -131,8 +140,12 @@ pub async fn execute_step(step: &Step, ctx: &StepContext, reporter: ProgressRepo
                 reporter,
             )
             .await?;
-            let name = output_table.clone().unwrap_or_else(|| input.clone());
-            StepOutcome::table(name, df)
+            match (output_table.as_deref(), input.as_deref()) {
+                (Some(o), _) => StepOutcome::table(o.to_string(), df),
+                (None, Some(i)) => StepOutcome::table(i.to_string(), df),
+                // Sin tabla destino: el step solo tuvo efectos sobre params.
+                (None, None) => StepOutcome::params_only(df.height()),
+            }
         }
     };
     Ok(outcome)
@@ -165,6 +178,14 @@ impl StepOutcome {
             output_table: None,
             dataframe: None,
             row_count: rows_affected,
+        }
+    }
+    /// Procedural sin tabla input ni output_table: solo efectos sobre params.
+    fn params_only(rows: usize) -> Self {
+        Self {
+            output_table: None,
+            dataframe: None,
+            row_count: rows,
         }
     }
 }

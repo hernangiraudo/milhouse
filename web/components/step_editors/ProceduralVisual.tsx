@@ -52,6 +52,11 @@ export function ProceduralVisual({
   }, []);
 
   function setInput(tbl: string) {
+    // Vacío = sin input. Útil para pasos que solo manipulan params.
+    if (!tbl) {
+      onChange({ ...step, input: undefined, depends_on: [] });
+      return;
+    }
     const stepId = available.find((a) => a.output_table === tbl)?.step_id;
     const deps = new Set<string>();
     if (stepId) deps.add(stepId);
@@ -112,12 +117,19 @@ export function ProceduralVisual({
             </button>
           </div>
         </Field>
-        <Field label="Tabla input">
+        <Field label="Tabla input (opcional)">
           <TableSelect
             value={step.input ?? ""}
             available={available}
             onChange={setInput}
+            placeholder="(ninguna — solo manipular params)"
           />
+          <p className="text-[11px] text-dim mt-1">
+            Dejá vacío para pasos que no necesitan datos (ej. preparar
+            <code> :Filtro</code> o <code>:FechaDesde</code> dinámicos
+            antes de un SQL). Asignaciones a <code>params.X</code> en el
+            script se propagan a los pasos siguientes.
+          </p>
         </Field>
       </div>
 
@@ -193,10 +205,14 @@ export function ProceduralVisual({
               />
             </div>
             <p className="text-[11px] text-dim mt-1">
-              Acceso a <code>row</code> (Map mutable con los campos de la
-              fila) y <code>state</code> (Map persistente entre filas).
-              Devolvé <code>row</code> para incluirla en el output. Ejemplo:
-              <code> state.flagged += 1; row.score = 0.9; row</code>
+              Acceso a <code>row</code> (Map de la fila, mutable),{" "}
+              <code>state</code> (Map persistente entre filas) y{" "}
+              <code>params</code> (Map mutable con los parámetros del job).
+              Asignar a <code>params.X</code> propaga el valor a los
+              pasos siguientes (incluyendo SQL que usen{" "}
+              <code>:X</code>). Sin <code>input</code> el script corre 1
+              vez con <code>row</code> vacía. Ejemplo con datos:{" "}
+              <code>state.flagged += 1; row.score = 0.9; row</code>.
             </p>
           </Field>
         </>

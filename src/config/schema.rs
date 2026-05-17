@@ -397,7 +397,12 @@ pub enum StepSpec {
         target: ExportTarget,
     },
     Procedural {
-        input: String,
+        /// Tabla de entrada. Opcional: si se omite (None), el script arranca
+        /// con un DataFrame vacío. Útil para pasos que solo manipulan
+        /// `params` (preparar SQL dinámicos, validaciones, logging) sin
+        /// necesitar datos.
+        #[serde(default)]
+        input: Option<String>,
         engine: ProceduralEngine,
         #[serde(default)]
         script: Option<String>,
@@ -407,7 +412,9 @@ pub enum StepSpec {
         params: serde_json::Value,
         #[serde(default)]
         state_init: serde_json::Value,
-        /// Si se omite, el resultado modifica la tabla `input`.
+        /// Si se omite y hay `input`, el resultado modifica la tabla `input`.
+        /// Si no hay ni `input` ni `output_table`, el step no produce tabla
+        /// (solo efectos sobre params).
         #[serde(default)]
         output_table: Option<String>,
     },
@@ -550,12 +557,19 @@ impl Step {
                 input,
                 output_table,
                 ..
-            }
-            | StepSpec::Procedural {
+            } => Some(output_table.as_deref().unwrap_or(input.as_str())),
+            // Procedural: input es opcional. Si hay output_table, ese; si no
+            // hay output_table pero sí input, in-place; si no hay ninguno,
+            // el step no produce tabla.
+            StepSpec::Procedural {
                 input,
                 output_table,
                 ..
-            } => Some(output_table.as_deref().unwrap_or(input.as_str())),
+            } => match (output_table.as_deref(), input.as_deref()) {
+                (Some(o), _) => Some(o),
+                (None, Some(i)) => Some(i),
+                (None, None) => None,
+            },
             StepSpec::Export { .. } | StepSpec::SqlExec { .. } => None,
         }
     }

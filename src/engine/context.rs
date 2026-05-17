@@ -589,8 +589,10 @@ pub struct StepContext {
     pub connections: Arc<ConnectionPool>,
     pub cancel: CancellationToken,
     /// Parámetros resueltos para esta ejecución (`:nombre` → valor).
-    /// Vacío si el proyecto no declara parámetros.
-    pub params: Arc<crate::engine::params::ResolvedParams>,
+    /// Vacío si el proyecto no declara parámetros. RwLock para permitir
+    /// que pasos procedurales muten valores en runtime y los pasos
+    /// siguientes vean los cambios al sustituir `:nombre`.
+    pub params: Arc<tokio::sync::RwLock<crate::engine::params::ResolvedParams>>,
 }
 
 impl StepContext {
