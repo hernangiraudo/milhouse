@@ -4,13 +4,15 @@
       "name": "FechaDesde",
       "kind": "date",
       "label": "Fecha desde",
-      "description": null
+      "description": null,
+      "default": "2025-12-31"
     },
     {
       "name": "FechaHasta",
       "kind": "date",
       "label": "Fecha Hasta",
-      "description": null
+      "description": null,
+      "default": "today - 1"
     },
     {
       "name": "Comitente",
@@ -22,7 +24,8 @@
       "name": "ComitentesPrex",
       "kind": "boolean",
       "label": "Incluir Comitentes Prex",
-      "description": null
+      "description": null,
+      "default": "0"
     },
     {
       "name": "ComitentesCarteraPropia",

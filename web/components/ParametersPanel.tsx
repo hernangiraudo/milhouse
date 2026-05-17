@@ -750,11 +750,9 @@ function PresetParamRow({
     <div className="grid grid-cols-[1fr_140px] gap-2 items-start">
       <div>
         {k === "date" && (
-          <input
-            type="date"
+          <DateOrDynamicInput
             value={typeof value === "string" ? value : ""}
-            onChange={(e) => onChange(e.target.value || null)}
-            className="milhouse-field text-xs w-full"
+            onChange={(s) => onChange(s || null)}
           />
         )}
         {k === "number" && (

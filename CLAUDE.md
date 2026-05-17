@@ -91,6 +91,9 @@ src/
                           SqlServerPool/Lease (paralelismo MSSQL)
     params.rs             Sustitución :param en SQL (respeta strings,
                           comentarios, ::cast; expansion en IN(...))
+    dyn_dates.rs          Parser de fechas dinámicas: today, yesterday,
+                          start_of_month, today - 20d, etc. Resuelve a
+                          NaiveDate. Usado al sustituir kind=date.
     sql_query.rs sql_exec.rs join.rs lookup.rs transform.rs
     filter_subset.rs sort.rs export.rs procedural.rs union.rs
     introspect.rs         list_tables + list_columns (con is_primary_key)
@@ -223,13 +226,24 @@ spawnear): local pisa global por nombre. El motor de sustitución ve la
 unión, así un proyecto puede usar `:FechaDesde` sin declararla si está
 declarada globalmente.
 
-`ParamSpec`: `{name, kind, label?, description?}` donde
+`ParamSpec`: `{name, kind, label?, description?, default?}` donde
 kind = `date | number | text | boolean | list_number | list_text`.
+`default` es el fallback final si nadie respondió el parámetro al
+ejecutar.
 `ParamPreset`: `{name, description?, values: {paramName: ParamValue}}`
 para guardar respuestas (ej. "Year to Date" setea FechaDesde+FechaHasta).
 `PresetGroup`: `{name, description?, preset_names: [string]}` — grupos
 de respuestas (globales, en `parameters.json`). Al ejecutar, elegir un
 grupo aplica todos sus presets en orden (último gana por colisión).
+
+**Cadena de fallbacks** para resolver el valor de cada parámetro al
+ejecutar (precedencia más fuerte arriba):
+1. `req.parameters` (lo que respondió el usuario en el prompt).
+2. `cfg.run_defaults` (respuestas por default del proyecto).
+3. `ParamSpec.default` (valor por default de la definición global).
+
+Si después de los tres niveles algún parámetro usado en los pasos sigue
+sin valor, `create_job` rechaza con error claro.
 
 Uso en SQL/expresiones: `:NombreDelParametro`. El motor sustituye **antes**
 de despachar al backend SQL (en `engine/mod.rs`):
@@ -239,6 +253,23 @@ de despachar al backend SQL (en `engine/mod.rs`):
 - En contexto `IN (:Lista)` se expande a `IN (v1, v2, v3)` automáticamente
   (detección de IN scaneando hacia atrás en el output buffer).
 - Respeta strings, comentarios y `::cast` de Postgres.
+
+**Fechas dinámicas** (`engine/dyn_dates.rs`): cuando un parámetro de
+`kind=date` recibe una expresión en vez de una fecha ISO, el motor la
+resuelve contra hoy antes de quotear. Sintaxis:
+- Tokens: `today`, `yesterday`, `tomorrow`, `start_of_month`,
+  `end_of_month`, `start_of_year`, `end_of_year` (aliases en español:
+  `hoy`, `ayer`, `mañana`, `inicio_mes`, `fin_mes`, `inicio_anio`,
+  `fin_anio`).
+- Offsets: `<token> ± Nd|Nm|Ny`. Meses calendario (ajusta al último día
+  válido del mes destino — `31-ene + 1m` → 29-feb / 28-feb).
+- Aplica en **cualquier valor de fecha**: param.default, run_defaults,
+  presets/respuestas guardadas, y respuesta directa en el prompt. El
+  toggle "📅 Fija / ⏱ Dinámica" del `DateOrDynamicInput` aparece en
+  todos los editores de fecha (`ParametersPanel`, `RunDefaultEditor`,
+  `ParameterPromptDialog`).
+- Las fechas ISO literales `YYYY-MM-DD` siguen funcionando como antes
+  (el parser detecta `\d{4}-` al inicio y devuelve `None`).
 
 **Exposición a scripts procedurales** (rhai/rust): el `ProcCtx` lleva
 `params_resolved: Arc<ResolvedParamsForScripts>`. El `rhai_runner`
@@ -784,6 +815,18 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **`ParamSpec.default`** — fallback final del parámetro a nivel de la
+  definición. Cadena de fallbacks en backend: request > `cfg.run_defaults`
+  > `ParamSpec.default`. UI: editor inline en el tab Parámetros, debajo
+  de cada parámetro, con control adecuado por kind.
+- **Fechas dinámicas** (`engine/dyn_dates.rs`): tokens (`today`,
+  `start_of_month`, etc) + offsets (`today - 20d`, `start_of_month + 1m`)
+  resueltos contra hoy antes de quotear. Aplica en **cualquier** valor
+  de fecha: defaults de la definición, run_defaults del proyecto,
+  presets/respuestas guardadas y respuesta directa en el prompt. El
+  toggle "📅 Fija / ⏱ Dinámica" del `DateOrDynamicInput` aparece en
+  todos los editores de fecha. 7 unit tests en Rust cubren parser +
+  edge cases (fin de mes con add_months, ISO passthrough, etc).
 - **Parámetro `boolean` (Sí/No)** — nuevo `ParamKind::Boolean`. Render SQL
   `1`/`0` (portable). En rhai llega como `params.Nombre = 1` o `0`
   (int, no string) gracias a la nueva coerción por kind en

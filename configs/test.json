@@ -5,12 +5,20 @@
   "groups": [],
   "parameters": [],
   "presets": [],
+  "selected_global_params": [
+    "FechaDesde",
+    "FechaHasta",
+    "Comitente",
+    "ComitentesPrex"
+  ],
+  "run_defaults": {},
   "api": {
     "exposed": false,
     "token": null,
     "export_datasets": [],
     "accept_parameters": false
   },
+  "settings": {},
   "steps": [
     {
       "step_uid": 1,
