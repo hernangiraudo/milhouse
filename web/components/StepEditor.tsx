@@ -19,6 +19,7 @@ export type Step = Record<string, unknown> & {
   group?: string | null;
   log_level?: "info" | "warn" | "error";
   dataset_name?: string | null;
+  priority?: "low" | "normal" | "high";
 };
 
 const KIND_OPTIONS: Array<{ value: string; label: string }> = [
@@ -216,6 +217,23 @@ export function StepEditor({
                 <option value="info">info</option>
                 <option value="warn">warn</option>
                 <option value="error">error</option>
+              </select>
+            </Field>
+            <Field label="Prioridad">
+              <select
+                value={step.priority ?? "normal"}
+                onChange={(e) =>
+                  update(
+                    "priority",
+                    e.target.value as "low" | "normal" | "high",
+                  )
+                }
+                className="w-full milhouse-field"
+                title="High se ejecuta antes que Normal/Low. Low espera a que terminen los High/Normal. Las dependencias del DAG siempre se respetan."
+              >
+                <option value="high">★ Alta</option>
+                <option value="normal">Normal</option>
+                <option value="low">Baja</option>
               </select>
             </Field>
             <Field label="Dataset name (debug)">

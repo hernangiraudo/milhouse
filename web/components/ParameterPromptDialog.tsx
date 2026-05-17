@@ -47,6 +47,12 @@ export function ParameterPromptDialog({
   onResolved: (args: {
     values: Record<string, ParamValueJson>;
     runName: string | null;
+    /** Nombres de presets que el usuario tildó en el prompt. Útil cuando
+     *  el caller quiere persistir la selección (ej. schedules) en vez de
+     *  congelar los valores resueltos. */
+    selectedPresets: string[];
+    /** Nombres de grupos de respuestas que el usuario aplicó. */
+    selectedPresetGroups: string[];
   }) => void;
 }) {
   const dialog = useDialog();
@@ -220,8 +226,32 @@ export function ParameterPromptDialog({
           </div>
         )}
 
-        <div className="space-y-2">
-          {parameters.map((p) => {
+        {(() => {
+          // Agrupar parámetros por categoría manteniendo el orden de
+          // entrada dentro de cada grupo.
+          const CAT_ORDER: Array<
+            "dates" | "comitentes" | "abreviaturas" | "execution" | "other"
+          > = ["dates", "comitentes", "abreviaturas", "execution", "other"];
+          const CAT_LABEL: Record<(typeof CAT_ORDER)[number], string> = {
+            dates: "Fechas",
+            comitentes: "Comitentes",
+            abreviaturas: "Abreviaturas",
+            execution: "Ejecución",
+            other: "Otros",
+          };
+          const grouped: Record<(typeof CAT_ORDER)[number], typeof parameters> = {
+            dates: [],
+            comitentes: [],
+            abreviaturas: [],
+            execution: [],
+            other: [],
+          };
+          for (const p of parameters) {
+            const cat = (p.category ??
+              "other") as (typeof CAT_ORDER)[number];
+            grouped[cat].push(p);
+          }
+          const renderParam = (p: ParamSpec) => {
             const inherited = fromPresets[p.name];
             const override = overrides[p.name];
             const current = override ?? inherited;
@@ -273,8 +303,20 @@ export function ParameterPromptDialog({
                 />
               </div>
             );
-          })}
-        </div>
+          };
+          return (
+            <div className="space-y-3">
+              {CAT_ORDER.filter((c) => grouped[c].length > 0).map((c) => (
+                <div key={c}>
+                  <h5 className="text-[10px] uppercase tracking-wider text-dim mb-1">
+                    {CAT_LABEL[c]} · {grouped[c].length}
+                  </h5>
+                  <div className="space-y-2">{grouped[c].map(renderParam)}</div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
 
         {missing.length > 0 && (
           <div className="mt-3 text-xs text-amber-300 bg-amber-500/10 border border-amber-700 rounded p-2">
@@ -290,12 +332,23 @@ export function ParameterPromptDialog({
             Cancelar
           </button>
           <button
-            onClick={() =>
+            onClick={() => {
+              // Detectamos qué grupos quedaron seleccionados como
+              // unidad: todos sus preset_names tildados en selectedPresets.
+              const fullyOnGroups = (presetGroups ?? [])
+                .filter(
+                  (g) =>
+                    g.preset_names.length > 0 &&
+                    g.preset_names.every((n) => selectedPresets.includes(n)),
+                )
+                .map((g) => g.name);
               onResolved({
                 values: effective,
                 runName: runName.trim() || null,
-              })
-            }
+                selectedPresets,
+                selectedPresetGroups: fullyOnGroups,
+              });
+            }}
             disabled={missing.length > 0}
             className="text-sm font-semibold px-3 py-1.5 rounded disabled:opacity-50"
             style={{ background: "var(--accent)", color: "var(--accent-ink)" }}

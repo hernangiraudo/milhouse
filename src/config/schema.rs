@@ -151,6 +151,29 @@ pub struct ParamSpec {
     /// > `ParamSpec.default`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<ParamValue>,
+    /// Categoría visual del parámetro. Solo afecta a la UI (agrupa en
+    /// el panel de edición y en el prompt al ejecutar). Default: `Other`.
+    #[serde(default)]
+    pub category: ParamCategory,
+}
+
+/// Categoría visual de un parámetro. Hardcodeada para mantener la UX
+/// consistente entre proyectos. Si necesitás otra categoría, agregala
+/// acá (no se persisten strings libres).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamCategory {
+    /// Fechas y rangos temporales.
+    Dates,
+    /// Comitentes / cuentas / clientes.
+    Comitentes,
+    /// Abreviaturas / códigos / catálogos.
+    Abreviaturas,
+    /// Toggles de ejecución (booleans, flags, opciones).
+    Execution,
+    /// Sin clasificar — categoría "otros". Default.
+    #[default]
+    Other,
 }
 
 /// Valor resuelto de un parámetro. Lo que se sustituye en el SQL.
@@ -252,8 +275,25 @@ pub struct Step {
     /// el `output_table` del step.
     #[serde(default)]
     pub dataset_name: Option<String>,
+    /// Prioridad de ejecución dentro del job. El scheduler la usa como
+    /// tiebreaker cuando hay varios steps "ready" al mismo tiempo: primero
+    /// los `High`, después `Normal`, después `Low`. Las dependencias del
+    /// DAG SIEMPRE se respetan — si un step `Low` es ancestro de un
+    /// `High`, igual se ejecuta antes (porque el `High` necesita su
+    /// output_table). Default: `Normal`.
+    #[serde(default)]
+    pub priority: StepPriority,
     #[serde(flatten)]
     pub spec: StepSpec,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum StepPriority {
+    Low,
+    #[default]
+    Normal,
+    High,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

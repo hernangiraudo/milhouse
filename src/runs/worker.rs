@@ -248,6 +248,55 @@ async fn fire(
     let job_id = uuid::Uuid::new_v4().to_string();
     let user_label = format!("scheduler#{}", sch.id);
     let run_store = state.run_store.read().await.clone();
+
+    // Parámetros del schedule: si vinieron en parameters_json, los
+    // pasamos al job. También aplicamos selected_preset_groups: sus
+    // presets se mergean al cfg.run_defaults antes de lanzar, así
+    // entran en la cadena de fallbacks como nivel 2.
+    let (job_params, sched_groups): (
+        std::collections::HashMap<String, crate::config::ParamValue>,
+        Vec<String>,
+    ) = if let Some(json) = &sch.parameters_json {
+        #[derive(serde::Deserialize, Default)]
+        struct Bag {
+            #[serde(default)]
+            values: std::collections::HashMap<String, crate::config::ParamValue>,
+            #[serde(default)]
+            selected_preset_groups: Vec<String>,
+        }
+        match serde_json::from_str::<Bag>(json) {
+            Ok(b) => (b.values, b.selected_preset_groups),
+            Err(e) => {
+                tracing::warn!(
+                    "schedule #{} parameters_json inválido, ignorando: {e}",
+                    sch.id
+                );
+                Default::default()
+            }
+        }
+    } else {
+        Default::default()
+    };
+    // Mergeamos los grupos del schedule a los del config (sin duplicar).
+    for g in sched_groups {
+        if !cfg.selected_preset_groups.iter().any(|x| x == &g) {
+            cfg.selected_preset_groups.push(g);
+        }
+    }
+
+    // Constantes globales — snapshot al disparar.
+    let constants = {
+        let user_constants =
+            state.global_constants.read().await.constants.clone();
+        crate::config::merge_with_builtins(&user_constants)
+    };
+
+    let options = crate::orchestrator::scheduler::JobOptions {
+        params: job_params,
+        constants,
+        run_name: Some(format!("schedule {} · {}", sch.name, now.to_rfc3339())),
+        ..Default::default()
+    };
     let handle = run_job(
         job_id.clone(),
         sch.config_name.clone(),
@@ -256,7 +305,7 @@ async fn fire(
         cfg,
         state.pool.clone(),
         run_store,
-        crate::orchestrator::scheduler::JobOptions::default(),
+        options,
     )
     .await?;
     state.jobs.insert(job_id.clone(), handle);

@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  API_BASE,
   createJob,
   deleteRun,
+  getConfig,
   listConfigs,
   listJobs,
   OpenCasesBlockError,
@@ -12,6 +14,102 @@ import {
 import type { ConfigSummary, JobSummary } from "@/lib/types";
 import { useUser } from "@/lib/session";
 import { useDialog } from "./Dialog";
+import {
+  ParameterPromptDialog,
+  type PresetGroupDto,
+} from "./ParameterPromptDialog";
+import type {
+  ParamPreset,
+  ParamSpec,
+  ParamValueJson,
+} from "./DesignEditor";
+
+// Mismo scanner que DesignEditor (extraído por simplicidad).
+function scanParamRefs(text: string): string[] {
+  const out: string[] = [];
+  const n = text.length;
+  let i = 0;
+  let inS = false,
+    inD = false,
+    inLine = false,
+    inBlock = false;
+  while (i < n) {
+    const c = text[i];
+    const nx = i + 1 < n ? text[i + 1] : "\0";
+    if (inLine) {
+      if (c === "\n") inLine = false;
+      i++;
+      continue;
+    }
+    if (inBlock) {
+      if (c === "*" && nx === "/") {
+        inBlock = false;
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (inS) {
+      if (c === "'") {
+        if (nx === "'") {
+          i += 2;
+          continue;
+        }
+        inS = false;
+      }
+      i++;
+      continue;
+    }
+    if (inD) {
+      if (c === '"') inD = false;
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      inS = true;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inD = true;
+      i++;
+      continue;
+    }
+    if (c === "-" && nx === "-") {
+      inLine = true;
+      i += 2;
+      continue;
+    }
+    if (c === "/" && nx === "*") {
+      inBlock = true;
+      i += 2;
+      continue;
+    }
+    if (c === ":" && /[A-Za-z]/.test(nx)) {
+      if (i > 0 && text[i - 1] === ":") {
+        i++;
+        continue;
+      }
+      let end = i + 1;
+      while (end < n && /[A-Za-z0-9_]/.test(text[end])) end++;
+      if (
+        end < n &&
+        text[end] === "." &&
+        end + 1 < n &&
+        /[A-Za-z]/.test(text[end + 1])
+      ) {
+        end++;
+        while (end < n && /[A-Za-z0-9_]/.test(text[end])) end++;
+      }
+      out.push(text.slice(i + 1, end));
+      i = end;
+      continue;
+    }
+    i++;
+  }
+  return out;
+}
 
 type SortCol = "config" | "user" | "started_at";
 type SortDir = "asc" | "desc";
@@ -33,6 +131,40 @@ export function RunEtlPanel() {
   // selección múltiple para bulk delete
   const [checked, setChecked] = useState<Set<string>>(new Set());
 
+  // Parámetros globales + grupos (compartidos entre proyectos). Se cargan
+  // al montar y se usan para armar el prompt al ejecutar.
+  const [globalParams, setGlobalParams] = useState<{
+    parameters: ParamSpec[];
+    presets: ParamPreset[];
+    preset_groups: PresetGroupDto[];
+  }>({ parameters: [], presets: [], preset_groups: [] });
+  useEffect(() => {
+    fetch(`${API_BASE}/api/parameters`, { cache: "no-store" })
+      .then((r) =>
+        r.ok ? r.json() : { parameters: [], presets: [], preset_groups: [] },
+      )
+      .then((j) =>
+        setGlobalParams({
+          parameters: j.parameters ?? [],
+          presets: j.presets ?? [],
+          preset_groups: j.preset_groups ?? [],
+        }),
+      )
+      .catch(() => {});
+  }, []);
+
+  // Estado del prompt — abre cuando hay params usados que pedir.
+  const [paramPrompt, setParamPrompt] = useState<{
+    parameters: ParamSpec[];
+    presets: ParamPreset[];
+    presetGroups: PresetGroupDto[];
+    initialValues: Record<string, ParamValueJson>;
+    onResolved: (args: {
+      values: Record<string, ParamValueJson>;
+      runName: string | null;
+    }) => Promise<void> | void;
+  } | null>(null);
+
   async function reload() {
     try {
       const [cfgs, js] = await Promise.all([listConfigs(), listJobs()]);
@@ -53,18 +185,106 @@ export function RunEtlPanel() {
 
   async function run() {
     if (!selected) return;
-    setLoading(true);
     setErr(null);
+    // Cargar el config del proyecto para saber qué parámetros usa.
+    let cfg: Record<string, unknown>;
     try {
-      // debug = true siempre: los datasets intermedios se persisten en la DB
-      // de runs, lo cual habilita Revisión + Casos + preview.
-      const { job_id } = await createJob(selected, { user, debug: true });
-      router.push(`/jobs/${job_id}`);
+      cfg = await getConfig(selected);
     } catch (e) {
-      setErr(String(e));
-    } finally {
-      setLoading(false);
+      setErr(`No se pudo cargar el proyecto: ${e}`);
+      return;
     }
+    const localParams = ((cfg.parameters as ParamSpec[]) ?? []);
+    const localPresets = ((cfg.presets as ParamPreset[]) ?? []);
+    const selectedGlobals = new Set(
+      (cfg.selected_global_params as string[] | undefined) ?? [],
+    );
+    const localNames = new Set(localParams.map((p) => p.name));
+    const mergedParams: ParamSpec[] = [
+      ...localParams,
+      ...globalParams.parameters.filter(
+        (g) => selectedGlobals.has(g.name) && !localNames.has(g.name),
+      ),
+    ];
+
+    // Escanear los pasos para ver qué params se usan realmente.
+    const declaredSet = new Set(mergedParams.map((p) => p.name));
+    const usedNames = new Set<string>();
+    const steps = (cfg.steps as Array<Record<string, unknown>> | undefined) ?? [];
+    for (const s of steps) {
+      const kind = s.kind as string | undefined;
+      const texts: string[] = [];
+      if (kind === "sql_query" || kind === "sql_exec") {
+        const q = s.query as string | undefined;
+        if (q) texts.push(q);
+      } else if (kind === "filter_and_subset") {
+        const f = s.filter as string | undefined | null;
+        if (f) texts.push(f);
+      }
+      for (const t of texts) {
+        for (const n of scanParamRefs(t)) {
+          if (declaredSet.has(n)) usedNames.add(n);
+        }
+      }
+    }
+
+    const needed = mergedParams.filter((p) => usedNames.has(p.name));
+    const cfgName = (cfg.name as string | undefined) ?? selected;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const launch = async (
+      values: Record<string, ParamValueJson>,
+      runName: string | null,
+    ) => {
+      setLoading(true);
+      try {
+        const { job_id } = await createJob(selected, {
+          user,
+          debug: true,
+          parameters: values,
+          run_name: runName,
+        });
+        router.push(`/jobs/${job_id}`);
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (needed.length === 0) {
+      // No hay parámetros que pedir — lanzar directo.
+      await launch({}, null);
+      return;
+    }
+
+    // Mergear presets (locales primero, globales después por compat con
+    // DesignEditor). Esto permite que el dialog ofrezca todos.
+    const allPresetNames = new Set(localPresets.map((p) => p.name));
+    const mergedPresets: ParamPreset[] = [
+      ...localPresets,
+      ...globalParams.presets
+        .filter((g) => !allPresetNames.has(g.name))
+        .map((g) => ({
+          ...g,
+          description: g.description
+            ? `(global) ${g.description}`
+            : "(global)",
+        })),
+    ];
+
+    setParamPrompt({
+      parameters: needed,
+      presets: mergedPresets,
+      presetGroups: globalParams.preset_groups,
+      initialValues:
+        (cfg.run_defaults as Record<string, ParamValueJson>) ?? {},
+      onResolved: async (args) => {
+        await launch(args.values, args.runName);
+      },
+    });
+    void cfgName;
+    void today;
   }
 
   async function onDelete(j: JobSummary) {
@@ -341,7 +561,20 @@ export function RunEtlPanel() {
                     {j.config_display_name ?? j.config_name}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs">
-                    {j.user ?? <span className="text-dim">—</span>}
+                    {j.user ? (
+                      j.user.startsWith("scheduler#") ? (
+                        <span
+                          className="inline-block text-[10px] px-1.5 py-0.5 rounded border border-cyan-700 bg-cyan-500/20 text-cyan-300"
+                          title={`Disparado por ${j.user}`}
+                        >
+                          📅 {j.user}
+                        </span>
+                      ) : (
+                        j.user
+                      )
+                    ) : (
+                      <span className="text-dim">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-2">
                     <StatusBadge status={j.status} />
@@ -373,6 +606,24 @@ export function RunEtlPanel() {
           </table>
         </div>
       </div>
+
+      {paramPrompt && (
+        <ParameterPromptDialog
+          parameters={paramPrompt.parameters}
+          presets={paramPrompt.presets}
+          presetGroups={paramPrompt.presetGroups}
+          defaultRunName={`${selected.replace(/\.json$/, "")} · ${new Date()
+            .toISOString()
+            .slice(0, 10)}`}
+          initialValues={paramPrompt.initialValues}
+          onCancel={() => setParamPrompt(null)}
+          onResolved={async (args) => {
+            const cb = paramPrompt.onResolved;
+            setParamPrompt(null);
+            await cb(args);
+          }}
+        />
+      )}
     </section>
   );
 }

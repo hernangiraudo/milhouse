@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  API_BASE,
   createSchedule,
   deleteSchedule,
+  getConfig,
   listConfigs,
   listSchedules,
   patchSchedule,
@@ -13,6 +15,101 @@ import {
 } from "@/lib/api";
 import { useUser } from "@/lib/session";
 import { useDialog } from "./Dialog";
+import {
+  ParameterPromptDialog,
+  type PresetGroupDto,
+} from "./ParameterPromptDialog";
+import type {
+  ParamPreset,
+  ParamSpec,
+  ParamValueJson,
+} from "./DesignEditor";
+
+function scanParamRefs(text: string): string[] {
+  const out: string[] = [];
+  const n = text.length;
+  let i = 0;
+  let inS = false,
+    inD = false,
+    inLine = false,
+    inBlock = false;
+  while (i < n) {
+    const c = text[i];
+    const nx = i + 1 < n ? text[i + 1] : "\0";
+    if (inLine) {
+      if (c === "\n") inLine = false;
+      i++;
+      continue;
+    }
+    if (inBlock) {
+      if (c === "*" && nx === "/") {
+        inBlock = false;
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (inS) {
+      if (c === "'") {
+        if (nx === "'") {
+          i += 2;
+          continue;
+        }
+        inS = false;
+      }
+      i++;
+      continue;
+    }
+    if (inD) {
+      if (c === '"') inD = false;
+      i++;
+      continue;
+    }
+    if (c === "'") {
+      inS = true;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inD = true;
+      i++;
+      continue;
+    }
+    if (c === "-" && nx === "-") {
+      inLine = true;
+      i += 2;
+      continue;
+    }
+    if (c === "/" && nx === "*") {
+      inBlock = true;
+      i += 2;
+      continue;
+    }
+    if (c === ":" && /[A-Za-z]/.test(nx)) {
+      if (i > 0 && text[i - 1] === ":") {
+        i++;
+        continue;
+      }
+      let end = i + 1;
+      while (end < n && /[A-Za-z0-9_]/.test(text[end])) end++;
+      if (
+        end < n &&
+        text[end] === "." &&
+        end + 1 < n &&
+        /[A-Za-z]/.test(text[end + 1])
+      ) {
+        end++;
+        while (end < n && /[A-Za-z0-9_]/.test(text[end])) end++;
+      }
+      out.push(text.slice(i + 1, end));
+      i = end;
+      continue;
+    }
+    i++;
+  }
+  return out;
+}
 
 const DOW_LABELS = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 
@@ -36,6 +133,37 @@ export function SchedulesPanel() {
   const [winTo, setWinTo] = useState("23:00");
   const [winEvery, setWinEvery] = useState(5);
   const [cronExpr, setCronExpr] = useState("*/5 * * * *");
+
+  // Globales + prompt state.
+  const [globalParams, setGlobalParams] = useState<{
+    parameters: ParamSpec[];
+    presets: ParamPreset[];
+    preset_groups: PresetGroupDto[];
+  }>({ parameters: [], presets: [], preset_groups: [] });
+  useEffect(() => {
+    fetch(`${API_BASE}/api/parameters`, { cache: "no-store" })
+      .then((r) =>
+        r.ok ? r.json() : { parameters: [], presets: [], preset_groups: [] },
+      )
+      .then((j) =>
+        setGlobalParams({
+          parameters: j.parameters ?? [],
+          presets: j.presets ?? [],
+          preset_groups: j.preset_groups ?? [],
+        }),
+      )
+      .catch(() => {});
+  }, []);
+  const [paramPrompt, setParamPrompt] = useState<{
+    parameters: ParamSpec[];
+    presets: ParamPreset[];
+    presetGroups: PresetGroupDto[];
+    initialValues: Record<string, ParamValueJson>;
+    onResolved: (args: {
+      values: Record<string, ParamValueJson>;
+      selectedPresetGroups: string[];
+    }) => Promise<void> | void;
+  } | null>(null);
 
   async function reload() {
     try {
@@ -87,23 +215,102 @@ export function SchedulesPanel() {
       setErr("Spec inválido (faltan días o intervalo).");
       return;
     }
-    setBusy(true);
     setErr(null);
+
+    // Si el proyecto tiene parámetros usados, mostramos el prompt para
+    // que el usuario elija respuestas / grupos antes de crear el
+    // schedule. Si no, creamos directo.
+    let cfg: Record<string, unknown>;
     try {
-      await createSchedule({
-        name: name.trim(),
-        config_name: configName,
-        spec,
-        created_by: me,
-        enabled: true,
-      });
-      setName("");
-      await reload();
+      cfg = await getConfig(configName);
     } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
+      setErr(`No se pudo cargar el proyecto: ${e}`);
+      return;
     }
+    const localParams = ((cfg.parameters as ParamSpec[]) ?? []);
+    const localPresets = ((cfg.presets as ParamPreset[]) ?? []);
+    const selectedGlobals = new Set(
+      (cfg.selected_global_params as string[] | undefined) ?? [],
+    );
+    const localNames = new Set(localParams.map((p) => p.name));
+    const mergedParams: ParamSpec[] = [
+      ...localParams,
+      ...globalParams.parameters.filter(
+        (g) => selectedGlobals.has(g.name) && !localNames.has(g.name),
+      ),
+    ];
+    const declaredSet = new Set(mergedParams.map((p) => p.name));
+    const usedNames = new Set<string>();
+    const steps = (cfg.steps as Array<Record<string, unknown>> | undefined) ?? [];
+    for (const s of steps) {
+      const kind = s.kind as string | undefined;
+      const texts: string[] = [];
+      if (kind === "sql_query" || kind === "sql_exec") {
+        const q = s.query as string | undefined;
+        if (q) texts.push(q);
+      } else if (kind === "filter_and_subset") {
+        const f = s.filter as string | undefined | null;
+        if (f) texts.push(f);
+      }
+      for (const t of texts) {
+        for (const n of scanParamRefs(t)) {
+          if (declaredSet.has(n)) usedNames.add(n);
+        }
+      }
+    }
+    const needed = mergedParams.filter((p) => usedNames.has(p.name));
+
+    const persist = async (
+      values: Record<string, ParamValueJson>,
+      selectedPresetGroups: string[],
+    ) => {
+      setBusy(true);
+      try {
+        await createSchedule({
+          name: name.trim(),
+          config_name: configName,
+          spec,
+          created_by: me,
+          enabled: true,
+          parameters: values as Record<string, string | string[]>,
+          selected_preset_groups: selectedPresetGroups,
+        });
+        setName("");
+        await reload();
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    if (needed.length === 0) {
+      await persist({}, []);
+      return;
+    }
+
+    const allPresetNames = new Set(localPresets.map((p) => p.name));
+    const mergedPresets: ParamPreset[] = [
+      ...localPresets,
+      ...globalParams.presets
+        .filter((g) => !allPresetNames.has(g.name))
+        .map((g) => ({
+          ...g,
+          description: g.description
+            ? `(global) ${g.description}`
+            : "(global)",
+        })),
+    ];
+    setParamPrompt({
+      parameters: needed,
+      presets: mergedPresets,
+      presetGroups: globalParams.preset_groups,
+      initialValues:
+        (cfg.run_defaults as Record<string, ParamValueJson>) ?? {},
+      onResolved: async (args) => {
+        await persist(args.values, args.selectedPresetGroups);
+      },
+    });
   }
 
   async function onToggle(id: number, enabled: boolean) {
@@ -352,6 +559,24 @@ export function SchedulesPanel() {
           </table>
         </div>
       </div>
+
+      {paramPrompt && (
+        <ParameterPromptDialog
+          parameters={paramPrompt.parameters}
+          presets={paramPrompt.presets}
+          presetGroups={paramPrompt.presetGroups}
+          initialValues={paramPrompt.initialValues}
+          onCancel={() => setParamPrompt(null)}
+          onResolved={async (args) => {
+            const cb = paramPrompt.onResolved;
+            setParamPrompt(null);
+            await cb({
+              values: args.values,
+              selectedPresetGroups: args.selectedPresetGroups,
+            });
+          }}
+        />
+      )}
     </section>
   );
 }

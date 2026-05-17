@@ -593,6 +593,8 @@ export async function createSchedule(req: {
   enabled?: boolean;
   spec: ScheduleSpec;
   created_by?: string | null;
+  parameters?: Record<string, string | string[]>;
+  selected_preset_groups?: string[];
 }): Promise<number> {
   const r = await fetch(`${API_BASE}/api/schedules`, {
     method: "POST",

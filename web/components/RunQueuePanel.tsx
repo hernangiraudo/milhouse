@@ -156,6 +156,31 @@ export function RunQueuePanel({
   const runningCount = buckets.running.length;
   const waitingCount = buckets.waiting.length;
 
+  // Lugar en cola para los waiting: orden = priority desc, después orden
+  // original del proyecto. Espejo del scheduler. Solo asigna posición a
+  // los Pending/Ready (los waiting reales) — los Running tienen su clock,
+  // los Done están terminados.
+  const queuePosition = useMemo(() => {
+    const order: Record<string, number> = {};
+    const prioRank = (p: unknown) =>
+      p === "high" ? 0 : p === "low" ? 2 : 1;
+    const stepIdxByOrig = new Map<string, number>(
+      steps.map((s, i) => [s.id, i]),
+    );
+    const sorted = [...buckets.waiting].sort((a, b) => {
+      const pa = prioRank((a as { priority?: unknown }).priority);
+      const pb = prioRank((b as { priority?: unknown }).priority);
+      if (pa !== pb) return pa - pb;
+      return (
+        (stepIdxByOrig.get(a.id) ?? 0) - (stepIdxByOrig.get(b.id) ?? 0)
+      );
+    });
+    sorted.forEach((s, idx) => {
+      order[s.id] = idx + 1;
+    });
+    return order;
+  }, [buckets.waiting, steps]);
+
   // Agregados para el header: total de filas devueltas (suma de Done) y
   // duración total (suma de durationMs de Done; aprox del job).
   const totals = useMemo(() => {
@@ -262,7 +287,14 @@ export function RunQueuePanel({
                 </code>
               </div>
               <ul className="space-y-0.5">
-                {items.map((s) => {
+                {(b === "waiting"
+                  ? [...items].sort(
+                      (a, c) =>
+                        (queuePosition[a.id] ?? 999) -
+                        (queuePosition[c.id] ?? 999),
+                    )
+                  : items
+                ).map((s) => {
                   const status: NodeStatus = stepStates[s.id] ?? "idle";
                   // Cancelar uno: aplica a pendientes/ready y también a
                   // running (cuando hay sql_session, el backend manda KILL;
@@ -274,11 +306,21 @@ export function RunQueuePanel({
                       (status === "pending" || status === "ready")) ||
                       b === "running");
                   const session = stepSessions?.[s.id];
+                  const prio = (s as { priority?: string }).priority;
+                  const queuePos = queuePosition[s.id];
                   return (
                     <li
                       key={s.id}
                       className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded hover:bg-surface-2"
                     >
+                      {b === "waiting" && queuePos != null && (
+                        <span
+                          className="text-[10px] font-mono text-dim shrink-0 w-6 text-right"
+                          title={`Lugar en la cola: #${queuePos}`}
+                        >
+                          #{queuePos}
+                        </span>
+                      )}
                       {b === "running" && (
                         <span
                           className="inline-block w-1.5 h-1.5 rounded-full"
@@ -299,6 +341,18 @@ export function RunQueuePanel({
                       >
                         {s.id}
                       </code>
+                      {prio && prio !== "normal" && (
+                        <span
+                          className={`text-[9px] px-1 rounded font-semibold uppercase tracking-wider ${
+                            prio === "high"
+                              ? "bg-amber-500/20 text-amber-300 border border-amber-700"
+                              : "bg-slate-500/20 text-slate-300 border border-slate-700"
+                          }`}
+                          title={`Prioridad ${prio}`}
+                        >
+                          {prio === "high" ? "★" : "▼"}
+                        </span>
+                      )}
                       {session && b === "running" && (
                         <span
                           className="text-[10px] px-1 rounded font-mono"

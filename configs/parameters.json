@@ -36,7 +36,7 @@
     {
       "name": "ComitentesCarteraClientes",
       "kind": "boolean",
-      "label": "Incluir Comitentes Cartera de Clientesx únicamente",
+      "label": "Incluir Comitentes Cartera de Clientes únicamente",
       "description": null
     }
   ],

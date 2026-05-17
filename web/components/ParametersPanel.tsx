@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useDialog } from "./Dialog";
 import { parseExcelForParam } from "@/lib/api";
 import type {
+  ParamCategory,
   ParamKind,
   ParamPreset,
   ParamSpec,
@@ -18,6 +19,26 @@ const KIND_LABEL: Record<ParamKind, string> = {
   list_number: "Lista de números",
   list_text: "Lista de textos",
 };
+
+const CATEGORY_LABEL: Record<ParamCategory, string> = {
+  dates: "Fechas",
+  comitentes: "Comitentes",
+  abreviaturas: "Abreviaturas",
+  execution: "Ejecución",
+  other: "Otros",
+};
+
+const CATEGORY_ORDER: ParamCategory[] = [
+  "dates",
+  "comitentes",
+  "abreviaturas",
+  "execution",
+  "other",
+];
+
+function getCategory(p: ParamSpec): ParamCategory {
+  return p.category ?? "other";
+}
 
 function isListKind(k: ParamKind): boolean {
   return k === "list_number" || k === "list_text";
@@ -286,66 +307,134 @@ export function ParametersPanel({
           {parameters.length === 0 ? (
             <div className="text-xs text-dim">Sin parámetros.</div>
           ) : (
-            <div className="space-y-1.5">
-              {parameters.map((p, i) => (
-                <div
-                  key={i}
-                  className="bg-surface-2 border border-surface rounded p-2 space-y-1.5"
-                >
-                  <div className="grid grid-cols-[1fr_140px_2fr_30px] gap-2 items-center">
-                    <input
-                      value={p.name}
-                      onChange={(e) => updateParam(i, { name: e.target.value })}
-                      placeholder="Nombre (ej. FechaDesde)"
-                      className="milhouse-field text-sm font-mono"
-                    />
-                    <select
-                      value={p.kind}
-                      onChange={(e) =>
-                        updateParam(i, { kind: e.target.value as ParamKind })
-                      }
-                      className="milhouse-field text-sm"
-                    >
-                      {Object.entries(KIND_LABEL).map(([k, label]) => (
-                        <option key={k} value={k}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      value={p.label ?? ""}
-                      onChange={(e) =>
-                        updateParam(i, { label: e.target.value || null })
-                      }
-                      placeholder="Etiqueta visible (opcional)"
-                      className="milhouse-field text-sm"
-                    />
-                    <button
-                      onClick={() => deleteParam(i)}
-                      className="text-red-400 text-xs"
-                      title="Eliminar"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-[110px_1fr] gap-2 items-center">
-                    <span
-                      className="text-[10px] uppercase tracking-wider text-dim text-right pr-1"
-                      title="Valor por default si nadie responde el parámetro al ejecutar"
-                    >
-                      Default
-                    </span>
-                    <ParamDefaultEditor
-                      param={p}
-                      value={p.default ?? undefined}
-                      onChange={(next) =>
-                        updateParam(i, { default: next })
-                      }
-                    />
-                  </div>
+            (() => {
+              // Agrupar por categoría preservando el índice original
+              // (necesario para updateParam/deleteParam).
+              const groups: Record<
+                ParamCategory,
+                Array<{ p: ParamSpec; idx: number }>
+              > = {
+                dates: [],
+                comitentes: [],
+                abreviaturas: [],
+                execution: [],
+                other: [],
+              };
+              parameters.forEach((p, idx) => {
+                groups[getCategory(p)].push({ p, idx });
+              });
+              return (
+                <div className="space-y-3">
+                  {CATEGORY_ORDER.filter(
+                    (cat) => groups[cat].length > 0,
+                  ).map((cat) => (
+                    <div key={cat}>
+                      <h5 className="text-[10px] uppercase tracking-wider text-dim mb-1 flex items-center gap-2">
+                        <span
+                          className="inline-block w-1.5 h-1.5 rounded-full"
+                          style={{
+                            background:
+                              cat === "dates"
+                                ? "#22d3ee"
+                                : cat === "comitentes"
+                                  ? "#a855f7"
+                                  : cat === "abreviaturas"
+                                    ? "#f59e0b"
+                                    : cat === "execution"
+                                      ? "#10b981"
+                                      : "#64748b",
+                          }}
+                          aria-hidden
+                        />
+                        {CATEGORY_LABEL[cat]} · {groups[cat].length}
+                      </h5>
+                      <div className="space-y-1.5">
+                        {groups[cat].map(({ p, idx }) => (
+                          <div
+                            key={idx}
+                            className="bg-surface-2 border border-surface rounded p-2 space-y-1.5"
+                          >
+                            <div className="grid grid-cols-[1fr_120px_120px_2fr_30px] gap-2 items-center">
+                              <input
+                                value={p.name}
+                                onChange={(e) =>
+                                  updateParam(idx, { name: e.target.value })
+                                }
+                                placeholder="Nombre (ej. FechaDesde)"
+                                className="milhouse-field text-sm font-mono"
+                              />
+                              <select
+                                value={p.kind}
+                                onChange={(e) =>
+                                  updateParam(idx, {
+                                    kind: e.target.value as ParamKind,
+                                  })
+                                }
+                                className="milhouse-field text-sm"
+                              >
+                                {Object.entries(KIND_LABEL).map(([k, label]) => (
+                                  <option key={k} value={k}>
+                                    {label}
+                                  </option>
+                                ))}
+                              </select>
+                              <select
+                                value={getCategory(p)}
+                                onChange={(e) =>
+                                  updateParam(idx, {
+                                    category: e.target.value as ParamCategory,
+                                  })
+                                }
+                                className="milhouse-field text-sm"
+                                title="Categoría visual (agrupa el parámetro en la UI)"
+                              >
+                                {CATEGORY_ORDER.map((c) => (
+                                  <option key={c} value={c}>
+                                    {CATEGORY_LABEL[c]}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                value={p.label ?? ""}
+                                onChange={(e) =>
+                                  updateParam(idx, {
+                                    label: e.target.value || null,
+                                  })
+                                }
+                                placeholder="Etiqueta visible (opcional)"
+                                className="milhouse-field text-sm"
+                              />
+                              <button
+                                onClick={() => deleteParam(idx)}
+                                className="text-red-400 text-xs"
+                                title="Eliminar"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-[110px_1fr] gap-2 items-center">
+                              <span
+                                className="text-[10px] uppercase tracking-wider text-dim text-right pr-1"
+                                title="Valor por default si nadie responde el parámetro al ejecutar"
+                              >
+                                Default
+                              </span>
+                              <ParamDefaultEditor
+                                param={p}
+                                value={p.default ?? undefined}
+                                onChange={(next) =>
+                                  updateParam(idx, { default: next })
+                                }
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              );
+            })()
           )}
         </div>
       )}

@@ -229,10 +229,12 @@ spawnear): local pisa global por nombre. El motor de sustitución ve la
 unión, así un proyecto puede usar `:FechaDesde` sin declararla si está
 declarada globalmente.
 
-`ParamSpec`: `{name, kind, label?, description?, default?}` donde
-kind = `date | number | text | boolean | list_number | list_text`.
+`ParamSpec`: `{name, kind, label?, description?, default?, category?}`
+donde kind = `date | number | text | boolean | list_number | list_text`
+y category = `dates | comitentes | abreviaturas | execution | other`.
 `default` es el fallback final si nadie respondió el parámetro al
-ejecutar.
+ejecutar. `category` agrupa visualmente en `ParametersPanel` y en el
+prompt al ejecutar — no afecta el backend de ejecución.
 `ParamPreset`: `{name, description?, values: {paramName: ParamValue}}`
 para guardar respuestas (ej. "Year to Date" setea FechaDesde+FechaHasta).
 `PresetGroup`: `{name, description?, preset_names: [string]}` — grupos
@@ -856,7 +858,28 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
-- **Fix steps colgados en "Ejecutando" cuando la base rechaza conexión**:
+- **Priority por step** (`StepPriority { Low, Normal, High }`, default
+  `Normal`). El scheduler usa priority como orden estricto:
+  primero los High, después Normal, después Low. Las dependencias del
+  DAG se respetan siempre (sólo entra a la cola lo que tiene
+  in_degree==0). UI: select "★ Alta / Normal / Baja" en StepEditor.
+  En `RunQueuePanel`, los waiting muestran `#N` (lugar en cola
+  calculado en cliente con el mismo criterio del backend) + badge ★/▼
+  de prioridad.
+- **Categorías de parámetros** (`ParamCategory { Dates, Comitentes,
+  Abreviaturas, Execution, Other }`, default `Other`). Solo visual:
+  agrupa en `ParametersPanel` (tab Parámetros) y en
+  `ParameterPromptDialog` con headers por categoría. Hardcodeado en
+  el enum para mantener UX consistente entre proyectos. Select en
+  cada fila del editor.
+- **Esc cierra el modal de dataset** en DesignEditor (`openedTable`)
+  via `useEffect` con keydown listener.
+- **RunEtl muestra todos los jobs**: el límite del `list_jobs` subió de
+  20 a 100. El user del job se muestra con badge cyan "📅 scheduler#N"
+  cuando viene del scheduler. Los disparados manualmente y los
+  programados aparecen en la misma lista.
+- **Fix steps colgados en "Ejecutando" cuando la base rechaza conexión**
+  (tanda previa):
   - `reporter.failed/completed/cancelled` ahora usan `send_terminal()`
     (try_send + spawn fallback) en vez de `try_send` solo. Antes el
     `Failed` se podía perder si la cola del mpsc estaba llena por logs

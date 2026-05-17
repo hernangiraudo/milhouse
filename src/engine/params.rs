@@ -289,6 +289,7 @@ mod tests {
                 label: None,
                 description: None,
                 default: None,
+                category: crate::config::ParamCategory::Other,
             }],
             vec![(
                 "FechaDesde",
@@ -308,6 +309,7 @@ mod tests {
                 label: None,
                 description: None,
                 default: None,
+                category: crate::config::ParamCategory::Other,
             }],
             vec![(
                 "Comitente",
@@ -334,6 +336,7 @@ mod tests {
                 label: None,
                 description: None,
                 default: None,
+                category: crate::config::ParamCategory::Other,
             }],
             vec![("X", ParamValue::Single("hola".into()))],
         );

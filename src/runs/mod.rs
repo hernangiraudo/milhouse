@@ -120,9 +120,13 @@ CREATE TABLE IF NOT EXISTS schedules (
     spec_json       VARCHAR NOT NULL,
     created_by      VARCHAR,
     created_at      TIMESTAMP NOT NULL,
-    last_fired_at   TIMESTAMP
+    last_fired_at   TIMESTAMP,
+    -- parameters_json (opcional): { "values": {...}, "selected_preset_groups": [...] }
+    parameters_json VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+-- Migración para bases creadas antes de tener parameters_json.
+ALTER TABLE schedules ADD COLUMN IF NOT EXISTS parameters_json VARCHAR;
 
 CREATE SEQUENCE IF NOT EXISTS roadmap_id_seq START 1;
 CREATE TABLE IF NOT EXISTS roadmap_items (
@@ -966,20 +970,22 @@ impl RunStore {
         spec_json: String,
         created_by: Option<String>,
         enabled: bool,
+        parameters_json: Option<String>,
     ) -> Result<i64> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || -> Result<i64> {
             let guard = conn.blocking_lock();
             guard.execute(
-                "INSERT INTO schedules (name, config_name, enabled, spec_json, created_by, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO schedules (name, config_name, enabled, spec_json, created_by, created_at, parameters_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
                 params![
                     name,
                     config_name,
                     enabled,
                     spec_json,
                     created_by,
-                    Utc::now().naive_utc().to_string()
+                    Utc::now().naive_utc().to_string(),
+                    parameters_json,
                 ],
             )?;
             let id: i64 =
@@ -1031,7 +1037,7 @@ impl RunStore {
         tokio::task::spawn_blocking(move || -> Result<Vec<ScheduleRow>> {
             let guard = conn.blocking_lock();
             let mut stmt = guard.prepare(
-                "SELECT id, name, config_name, enabled, spec_json, created_by, created_at, last_fired_at
+                "SELECT id, name, config_name, enabled, spec_json, created_by, created_at, last_fired_at, parameters_json
                  FROM schedules",
             )?;
             let mut rows = stmt.query([])?;
@@ -1052,6 +1058,7 @@ impl RunStore {
                     created_by: r.get(5).ok(),
                     created_at: r.get(6).ok(),
                     last_fired_at,
+                    parameters_json: r.get(8).ok(),
                 });
             }
             Ok(out)
@@ -1104,6 +1111,12 @@ pub struct ScheduleRow {
     pub created_by: Option<String>,
     pub created_at: Option<String>,
     pub last_fired_at: Option<DateTime<Utc>>,
+    /// JSON con la forma `{ "values": {paramName: ParamValue},
+    /// "selected_preset_groups": [string] }`. Si está, el worker pasa
+    /// esos valores como `JobOptions.params` y aplica los grupos
+    /// indicados al lanzar el job (además de los del config).
+    #[serde(default)]
+    pub parameters_json: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

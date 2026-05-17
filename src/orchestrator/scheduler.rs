@@ -477,12 +477,48 @@ async fn supervisor_and_scheduler(
         }
     }
 
+    // Tabla de prioridad + orden original por step_id, usadas como clave
+    // de sort para ordenar la cola de lanzamiento. Priority desc primero,
+    // después orden original (estable, predecible). Las dependencias del
+    // DAG se siguen respetando porque sólo enlistamos lo que ya tiene
+    // in_degree == 0.
+    let step_priority: HashMap<String, crate::config::StepPriority> = cfg
+        .steps
+        .iter()
+        .map(|s| (s.id.clone(), s.priority))
+        .collect();
+    let step_order_idx: HashMap<String, usize> = cfg
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.id.clone(), i))
+        .collect();
+    let sort_key = |a: &String, b: &String| {
+        let pa = step_priority
+            .get(a)
+            .copied()
+            .unwrap_or(crate::config::StepPriority::Normal);
+        let pb = step_priority
+            .get(b)
+            .copied()
+            .unwrap_or(crate::config::StepPriority::Normal);
+        // High > Normal > Low (Ord del enum); queremos High primero → reverse.
+        match pb.cmp(&pa) {
+            std::cmp::Ordering::Equal => {
+                let ia = step_order_idx.get(a).copied().unwrap_or(usize::MAX);
+                let ib = step_order_idx.get(b).copied().unwrap_or(usize::MAX);
+                ia.cmp(&ib)
+            }
+            o => o,
+        }
+    };
+
     let mut ready: Vec<String> = in_degree
         .iter()
         .filter(|(id, &d)| d == 0 && !done_or_terminal.contains(*id))
         .map(|(k, _)| k.clone())
         .collect();
-    ready.sort();
+    ready.sort_by(|a, b| sort_key(a, b));
 
     // Marcar ready
     for sid in &ready {
@@ -650,14 +686,50 @@ async fn supervisor_and_scheduler(
             to_launch.clear();
         }
 
-        // Lanzar de la cola respetando el cap de paralelismo. Si max es
-        // None, lanza todo. Si max es Some(N), lanza solo lo que cabe;
-        // el resto queda en to_launch esperando que termine alguno.
+        // Lanzar de la cola respetando el cap de paralelismo Y la
+        // prioridad estricta: si hay algún step Running o ready en la
+        // cola con prioridad MAYOR que el que sigue, no lanzamos el de
+        // prioridad inferior. Esto hace que los Low esperen siempre a
+        // que se vacíe la cola de Normal/High, y los Normal a la de
+        // High. Las dependencias del DAG ya las respetamos antes (sólo
+        // entra a la cola lo que tiene in_degree==0).
+        let highest_active: Option<crate::config::StepPriority> = {
+            // Buscamos el priority máximo entre los Running.
+            let s = state.read().await;
+            s.steps
+                .values()
+                .filter(|i| matches!(i.state, StepRuntimeState::Running { .. }))
+                .filter_map(|i| step_priority.get(&i.id).copied())
+                .max()
+        };
+        // Y entre los que están en la cola (incluido lo que va a
+        // lanzarse esta iteración): si hay High encolado, los Low
+        // esperan aunque no haya nada Running.
+        let highest_in_queue: Option<crate::config::StepPriority> =
+            to_launch.iter().filter_map(|s| step_priority.get(s).copied()).max();
+        let priority_floor = match (highest_active, highest_in_queue) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
         let mut launched_now = 0usize;
         let mut keep_waiting: Vec<String> = Vec::new();
         for sid in to_launch.drain(..) {
             if let Some(max) = max_parallel {
                 if running_count >= max {
+                    keep_waiting.push(sid);
+                    continue;
+                }
+            }
+            // Prioridad estricta: si hay algo de mayor prioridad activo
+            // o esperando, los de prioridad inferior se quedan en cola.
+            let my_prio = step_priority
+                .get(&sid)
+                .copied()
+                .unwrap_or(crate::config::StepPriority::Normal);
+            if let Some(floor) = priority_floor {
+                if my_prio < floor {
                     keep_waiting.push(sid);
                     continue;
                 }
@@ -834,6 +906,10 @@ async fn supervisor_and_scheduler(
                         }
                     }
                 }
+                // Mantener la cola ordenada por priority cada vez que
+                // entran nuevos elementos. Sort estable, costo bajo
+                // (la cola raramente tiene >100 entradas).
+                to_launch.sort_by(|a, b| sort_key(a, b));
                 save_timing(&msg.step_id, &cfg, duration_ms);
                 recompute_eta(&state, &broadcaster, &timings, &step_started_at).await;
             }

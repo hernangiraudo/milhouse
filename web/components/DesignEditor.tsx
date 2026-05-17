@@ -41,6 +41,13 @@ export type ParamKind =
   | "list_number"
   | "list_text";
 
+export type ParamCategory =
+  | "dates"
+  | "comitentes"
+  | "abreviaturas"
+  | "execution"
+  | "other";
+
 export interface ParamSpec {
   name: string;
   kind: ParamKind;
@@ -51,6 +58,8 @@ export interface ParamSpec {
    *  Para kind=date, puede ser una expresión dinámica como "today",
    *  "today - 20d", "start_of_month", "end_of_month", etc. */
   default?: ParamValueJson | null;
+  /** Categoría visual; agrupa el parámetro en la UI. Default "other". */
+  category?: ParamCategory;
 }
 
 export type ParamValueJson = string | string[];
@@ -186,6 +195,16 @@ export function DesignEditor({
   const [openedTablePreview, setOpenedTablePreview] = useState<
     DatasetPreview | null
   >(null);
+
+  // Esc cierra el modal de preview de dataset.
+  useEffect(() => {
+    if (!openedTable) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpenedTable(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openedTable]);
   const [openedTableErr, setOpenedTableErr] = useState<string | null>(null);
   // Globales: parámetros + respuestas compartidas entre proyectos. Se
   // cargan al montar y se usan para mergear con los locales en runtime.

@@ -16,8 +16,15 @@ pub async fn health() -> impl IntoResponse {
 pub async fn list_configs(State(state): State<AppState>) -> impl IntoResponse {
     let mut out = Vec::new();
     let dir = std::path::Path::new(&state.configs_dir);
-    // Archivos en este directorio que NO son configs ETL.
-    const NON_ETL: &[&str] = &["connections.json", "users.json"];
+    // Archivos en este directorio que NO son configs ETL — son los
+    // archivos compartidos del sistema. Si agregás otro archivo de
+    // configuración global, sumalo a esta lista.
+    const NON_ETL: &[&str] = &[
+        "connections.json",
+        "users.json",
+        "parameters.json",
+        "constants.json",
+    ];
     if let Ok(rd) = fs::read_dir(dir) {
         for entry in rd.flatten() {
             let p = entry.path();
@@ -1334,7 +1341,12 @@ pub async fn list_jobs(State(state): State<AppState>) -> impl IntoResponse {
         });
     }
     out.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-    out.truncate(20);
+    // Subimos el límite para que se vean tanto los manuales como los
+    // disparados por scheduler. El registry in-memory es siempre el
+    // truth source mientras el server vive (sin persistencia entre
+    // reinicios; para historial completo, sección Revisión usa la
+    // runs DB).
+    out.truncate(100);
     Json(out)
 }
 
@@ -1686,6 +1698,14 @@ pub struct CreateScheduleReq {
     pub spec: serde_json::Value,
     #[serde(default)]
     pub created_by: Option<String>,
+    /// Valores resueltos para los `:param` del proyecto. Se aplican como
+    /// `JobOptions.params` al disparar.
+    #[serde(default)]
+    pub parameters: std::collections::HashMap<String, crate::config::ParamValue>,
+    /// Grupos de respuestas que se aplican siempre al disparar este
+    /// schedule (además de los del config).
+    #[serde(default)]
+    pub selected_preset_groups: Vec<String>,
 }
 fn default_true() -> bool {
     true
@@ -1705,6 +1725,11 @@ pub async fn list_schedules(
         .map(|s| {
             let spec: Value =
                 serde_json::from_str(&s.spec_json).unwrap_or(Value::Null);
+            let params: Value = s
+                .parameters_json
+                .as_deref()
+                .and_then(|t| serde_json::from_str(t).ok())
+                .unwrap_or(Value::Null);
             json!({
                 "id": s.id,
                 "name": s.name,
@@ -1714,6 +1739,7 @@ pub async fn list_schedules(
                 "created_by": s.created_by,
                 "created_at": s.created_at,
                 "last_fired_at": s.last_fired_at,
+                "parameters": params,
             })
         })
         .collect();
@@ -1743,6 +1769,22 @@ pub async fn create_schedule(
         ));
     }
     let spec_json = serde_json::to_string(&req.spec).unwrap();
+    // Empaquetamos values + grupos seleccionados en un solo JSON. Si no
+    // hay nada de ninguno, dejamos NULL para mantener el comportamiento
+    // anterior (defaults del cfg).
+    let parameters_json = if req.parameters.is_empty()
+        && req.selected_preset_groups.is_empty()
+    {
+        None
+    } else {
+        Some(
+            serde_json::to_string(&serde_json::json!({
+                "values": req.parameters,
+                "selected_preset_groups": req.selected_preset_groups,
+            }))
+            .unwrap(),
+        )
+    };
     let id = store
         .create_schedule(
             req.name,
@@ -1750,6 +1792,7 @@ pub async fn create_schedule(
             spec_json,
             req.created_by,
             req.enabled,
+            parameters_json,
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
