@@ -1578,6 +1578,14 @@ async fn run_store_or_503(
         ))
 }
 
+/// GET /api/runs/health → `{available: bool}`. La UI lo usa para
+/// deshabilitar features que dependen de la DB de runs (schedules,
+/// revisión histórica, casos) en vez de mostrar un 503 al apretar.
+pub async fn runs_health(State(state): State<AppState>) -> Json<Value> {
+    let available = state.run_store.read().await.is_some();
+    Json(json!({ "available": available }))
+}
+
 pub async fn list_run_history(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, (StatusCode, String)> {

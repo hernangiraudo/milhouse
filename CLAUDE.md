@@ -419,6 +419,10 @@ GET    /api/ai/available                           {available: bool}
 GET    /api/users  /  POST  /  DELETE :name  /  POST /reload
 
 GET    /api/runs                                   histórico desde DB
+GET    /api/runs/health                            {available: bool} — usado
+                                                    por el frontend para
+                                                    deshabilitar UI que
+                                                    necesita la DB de runs
 DELETE /api/runs/:id                               bloquea si hay casos abiertos
 GET    /api/runs/:id/steps
 GET    /api/runs/:id/steps/:uid/logs
@@ -877,6 +881,16 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **Banner + botón deshabilitado en Planificación cuando falta la DB de
+  runs**: nuevo endpoint `GET /api/runs/health → {available: bool}` y
+  helper `runsHealth()` en `lib/api.ts`. `SchedulesPanel` chequea al
+  montar y, si `!runsAvailable`, muestra un banner ámbar con
+  instrucciones para configurar la conexión `runs` en Conexiones y
+  deshabilita el botón "Crear schedule" (label cambia a "Base de runs
+  no configurada" + tooltip). Si igual se intenta crear (race) el
+  catch detecta `503` / `runs DB not configured` y muestra modal
+  `dialog.alert` con `variant: "warning"` y título "Base de runs no
+  configurada", en lugar del feo `Error: createSchedule 503 ...`.
 - **`list_schedules` tolera `run_store` ausente**: si la DB de runs no
   está disponible (conexión `runs` faltante o archivo lockeado por
   otro `milhouse.exe`), devuelve `{schedules: []}` en vez de HTTP 503.

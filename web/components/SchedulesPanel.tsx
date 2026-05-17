@@ -9,6 +9,7 @@ import {
   listConfigs,
   listSchedules,
   patchSchedule,
+  runsHealth,
   type ConfigSummary,
   type ScheduleDto,
   type ScheduleSpec,
@@ -164,6 +165,15 @@ export function SchedulesPanel() {
       selectedPresetGroups: string[];
     }) => Promise<void> | void;
   } | null>(null);
+  // Disponibilidad de la DB de runs. Si está offline, deshabilitamos
+  // la creación de schedules y mostramos un banner explicando cómo
+  // configurarla.
+  const [runsAvailable, setRunsAvailable] = useState<boolean>(true);
+  useEffect(() => {
+    runsHealth()
+      .then((h) => setRunsAvailable(h.available))
+      .catch(() => setRunsAvailable(false));
+  }, []);
 
   async function reload() {
     // allSettled: si uno falla, el otro igual carga. Antes con
@@ -291,7 +301,26 @@ export function SchedulesPanel() {
         setName("");
         await reload();
       } catch (e) {
-        setErr(String(e));
+        const msg = String(e);
+        // Caso típico: la DB de runs no está disponible (sin conexión
+        // `runs` declarada, archivo lockeado, etc). Mostramos un modal
+        // amigable con instrucciones en vez del 503 crudo.
+        if (msg.includes("503") || msg.includes("runs DB not configured")) {
+          await dialog.alert(
+            "Para guardar schedules necesitás tener configurada la base de runs.\n\n" +
+              "Andá a la sección Conexiones y agregá una conexión con nombre 'runs' (puede ser DuckDB embebida apuntando a un archivo .duckdb local — Milhouse crea el schema solo la primera vez). Después reiniciá el backend para que la tome.\n\n" +
+              "Mientras tanto podés diseñar y ejecutar proyectos a mano, pero la planificación queda inactiva.",
+            {
+              title: "Base de runs no configurada",
+              variant: "warning",
+            },
+          );
+        } else {
+          await dialog.alert(`No se pudo crear el schedule: ${msg}`, {
+            title: "Error al guardar",
+            variant: "danger",
+          });
+        }
       } finally {
         setBusy(false);
       }
@@ -365,6 +394,26 @@ export function SchedulesPanel() {
             cada minuto y dispara los jobs que correspondan.
           </p>
         </header>
+
+        {!runsAvailable && (
+          <div className="milhouse-alert-warn rounded p-3 text-sm space-y-2">
+            <div className="font-semibold">
+              ⚠ La base de runs no está configurada
+            </div>
+            <p className="text-xs leading-relaxed">
+              La planificación necesita la conexión <code>runs</code> para
+              guardar los schedules. Andá a <strong>Conexiones</strong> y
+              agregá una con nombre <code>runs</code> (puede ser DuckDB
+              embebida apuntando a un archivo <code>.duckdb</code> local —
+              Milhouse crea el schema solo la primera vez). Después reiniciá
+              el backend para que la tome.
+            </p>
+            <p className="text-xs">
+              Mientras tanto podés diseñar y ejecutar proyectos a mano, pero
+              no podés crear schedules.
+            </p>
+          </div>
+        )}
 
         <form onSubmit={onCreate} className="space-y-3">
           <div className="grid grid-cols-[1fr_1fr] gap-3">
@@ -499,11 +548,20 @@ export function SchedulesPanel() {
 
           <button
             type="submit"
-            disabled={busy || !name.trim() || !configName}
+            disabled={busy || !name.trim() || !configName || !runsAvailable}
             className="font-semibold px-4 py-2 rounded-md disabled:opacity-40"
             style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
+            title={
+              !runsAvailable
+                ? "Necesitás configurar la conexión `runs` para crear schedules"
+                : undefined
+            }
           >
-            {busy ? "Creando…" : "Crear schedule"}
+            {busy
+              ? "Creando…"
+              : !runsAvailable
+              ? "Base de runs no configurada"
+              : "Crear schedule"}
           </button>
         </form>
       </div>

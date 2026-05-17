@@ -237,6 +237,15 @@ export async function deletePreload(configName: string): Promise<void> {
   if (!r.ok) throw new Error(`deletePreload ${r.status}`);
 }
 
+/** Indica si la base de runs está disponible. La UI usa esto para
+ *  deshabilitar features que dependen de ella (schedules, casos,
+ *  revisión histórica) sin esperar al 503 del POST. */
+export async function runsHealth(): Promise<{ available: boolean }> {
+  const r = await fetch(`${API_BASE}/api/runs/health`, { cache: "no-store" });
+  if (!r.ok) return { available: false };
+  return r.json();
+}
+
 export async function cancelJob(id: string): Promise<void> {
   const r = await fetch(`${API_BASE}/api/jobs/${id}/cancel`, { method: "POST" });
   if (!r.ok && r.status !== 204) throw new Error(`cancelJob ${r.status}`);

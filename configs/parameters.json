@@ -51,8 +51,8 @@
       "name": "YTD",
       "description": "Desde el 31 de diciembre de 2025 hasta ayer",
       "values": {
-        "FechaDesde": "2025-12-31",
-        "FechaHasta": "today -1"
+        "FechaHasta": "today -1",
+        "FechaDesde": "2025-12-31"
       }
     },
     {
@@ -61,6 +61,27 @@
       "values": {
         "Comitente": "17215"
       }
+    },
+    {
+      "name": "Comitentes",
+      "description": "Importado de COMITENTES.xlsx (2 valores)",
+      "values": {
+        "Comitente": "17215, 20549"
+      },
+      "description_table": [
+        [
+          "ComitenteNumero",
+          "Comitente"
+        ],
+        [
+          "17215",
+          "JFP"
+        ],
+        [
+          "20549",
+          "LS"
+        ]
+      ]
     }
   ],
   "preset_groups": [
