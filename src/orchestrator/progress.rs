@@ -110,6 +110,9 @@ impl ProgressReporter {
         &self.default_level
     }
     pub fn started(&self) {
+        // started() es informativo: si la cola está llena, podemos perderlo
+        // y el step queda visualmente en Ready hasta el primer Progress —
+        // no es crítico.
         let _ = self.tx.try_send(StepUpdateMsg {
             step_id: self.step_id.clone(),
             update: StepUpdate::Started,
@@ -141,22 +144,39 @@ impl ProgressReporter {
         });
     }
     pub fn completed(&self, row_count: usize, sample: Option<TableSample>) {
-        let _ = self.tx.try_send(StepUpdateMsg {
-            step_id: self.step_id.clone(),
-            update: StepUpdate::Completed { row_count, sample },
-        });
+        // Mensajes TERMINALES no pueden perderse: si el buffer del mpsc
+        // está lleno (1024 slots — pasa con muchos steps emitiendo logs
+        // rápido), `try_send` los descartaría silenciosamente y el step
+        // quedaría visualmente Running para siempre. Usamos `send()`
+        // bloqueante en blocking-context vía `blocking_send` o el
+        // helper async-blocking. Como el `ProgressReporter` es Clone y
+        // se llama desde async, usamos un detach que reintenta hasta
+        // que el supervisor lea.
+        send_terminal(
+            &self.tx,
+            StepUpdateMsg {
+                step_id: self.step_id.clone(),
+                update: StepUpdate::Completed { row_count, sample },
+            },
+        );
     }
     pub fn failed(&self, error: String) {
-        let _ = self.tx.try_send(StepUpdateMsg {
-            step_id: self.step_id.clone(),
-            update: StepUpdate::Failed { error },
-        });
+        send_terminal(
+            &self.tx,
+            StepUpdateMsg {
+                step_id: self.step_id.clone(),
+                update: StepUpdate::Failed { error },
+            },
+        );
     }
     pub fn cancelled(&self) {
-        let _ = self.tx.try_send(StepUpdateMsg {
-            step_id: self.step_id.clone(),
-            update: StepUpdate::Cancelled,
-        });
+        send_terminal(
+            &self.tx,
+            StepUpdateMsg {
+                step_id: self.step_id.clone(),
+                update: StepUpdate::Cancelled,
+            },
+        );
     }
     pub fn sql_session(&self, connection: String, sid: i32) {
         let _ = self.tx.try_send(StepUpdateMsg {
@@ -164,4 +184,20 @@ impl ProgressReporter {
             update: StepUpdate::SqlSession { connection, sid },
         });
     }
+}
+
+/// Envía un mensaje terminal (Completed / Failed / Cancelled) sin que
+/// se pueda perder. Si el buffer del mpsc está lleno, spawnea una task
+/// que await el send hasta que el supervisor consuma. Si el receptor
+/// se cerró (job ya terminó), simplemente descarta — no es bug.
+fn send_terminal(tx: &mpsc::Sender<StepUpdateMsg>, msg: StepUpdateMsg) {
+    // Fast path: cola con espacio, send sin reschedule.
+    if tx.try_send(msg.clone()).is_ok() {
+        return;
+    }
+    // Cola llena: spawnamos una task que await hasta poder enviar.
+    let tx2 = tx.clone();
+    tokio::spawn(async move {
+        let _ = tx2.send(msg).await;
+    });
 }

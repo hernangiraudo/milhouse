@@ -6,12 +6,25 @@
   "parameters": [],
   "presets": [],
   "selected_global_params": [
-    "FechaDesde",
     "FechaHasta",
     "Comitente",
-    "ComitentesPrex"
+    "FechaDesde",
+    "ComitentesPrex",
+    "ComitentesCarteraPropia",
+    "ComitentesCarteraClientes"
   ],
+  "param_requirements": {
+    "FechaHasta": "required",
+    "ComitentesCarteraPropia": "optional",
+    "Comitente": "optional",
+    "ComitentesCarteraClientes": "optional",
+    "ComitentesPrex": "optional",
+    "FechaDesde": "required"
+  },
   "run_defaults": {},
+  "selected_preset_groups": [
+    "c17215 YTD"
+  ],
   "api": {
     "exposed": false,
     "token": null,

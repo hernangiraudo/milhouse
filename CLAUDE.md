@@ -734,6 +734,23 @@ step_sql_session, job_eta, job_finished
 
 ## Trampas conocidas (NO repetir)
 
+### Scheduler / progress
+- **Mensajes terminales NUNCA con `try_send`**: `Completed`, `Failed`,
+  `Cancelled` se mandan vía `progress::send_terminal()` — fast path
+  `try_send` y si la cola está llena, spawn de una task que `send().await`
+  hasta que el supervisor consuma. Antes con `try_send` solo, si el
+  buffer de 1024 se saturaba con logs de varios steps fallando paralelos,
+  el `Failed` se perdía y el step quedaba "Running" para siempre.
+- **Cancel global marca los Running también como Cancelled**, no solo
+  Pending/Ready. Las tasks subyacentes pueden seguir corriendo un toque
+  en background si están bloqueadas en algo no cancelable; la UI ya
+  refleja el estado correcto. Los handlers de `Completed/Failed/Cancelled`
+  chequean si el step ya está terminal y, si sí, no pisan el state
+  (solo conservan el log del error en el caso de `Failed`).
+- **Conexiones SQL Server con timeouts**: 10s TCP + 15s handshake. Sin
+  esto, `TcpStream::connect` puede tardar 75s+ contra hosts inaccesibles
+  y bloquear el cancel cooperativo del job.
+
 ### Build/runtime
 - **`lto = "thin"` + `codegen-units = 1`** en release CUELGA los rustc en
   Windows >9000s sin output. Actual `Cargo.toml` tiene `lto = false`,
@@ -839,6 +856,16 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **Fix steps colgados en "Ejecutando" cuando la base rechaza conexión**:
+  - `reporter.failed/completed/cancelled` ahora usan `send_terminal()`
+    (try_send + spawn fallback) en vez de `try_send` solo. Antes el
+    `Failed` se podía perder si la cola del mpsc estaba llena por logs
+    de otros steps fallando paralelos.
+  - Cancel global marca los Running como Cancelled inmediatamente
+    (no espera a que sus tasks terminen naturalmente).
+  - Handlers Completed/Failed/Cancelled descartan el mensaje si el
+    step ya está terminal — evita pisar Cancelled con un Failed que
+    llega tarde.
 - **Requirement por parámetro** (`ParamRequirement { Optional, Required }`).
   `EtlConfig.param_requirements: HashMap<String, ParamRequirement>`. En
   Propiedades del proyecto, selects de 3 opciones para globales

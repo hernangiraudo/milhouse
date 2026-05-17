@@ -605,23 +605,48 @@ async fn supervisor_and_scheduler(
             }
         }
 
-        // Si el job fue cancelado, marcar pendientes/ready como Cancelled
+        // Si el job fue cancelado, marcar pendientes/ready como Cancelled.
+        // También marcamos los Running visualmente como Cancelled —
+        // sus tasks pueden seguir corriendo un toque (libera el cliente
+        // SQL pero la query del lado del servidor sigue), pero la UI
+        // ya refleja el estado correcto y no se quedan en "Ejecutando"
+        // hasta que el TCP timeout expire.
         if cancel.is_cancelled() {
-            let pending_ids: Vec<String> = {
+            let to_cancel: Vec<String> = {
                 let s = state.read().await;
                 s.step_order
                     .iter()
                     .filter(|id| {
                         let st = s.steps.get(*id).unwrap();
-                        matches!(st.state, StepRuntimeState::Pending | StepRuntimeState::Ready)
+                        matches!(
+                            st.state,
+                            StepRuntimeState::Pending
+                                | StepRuntimeState::Ready
+                                | StepRuntimeState::Running { .. }
+                        )
                     })
                     .cloned()
                     .collect()
             };
-            for id in &pending_ids {
+            let was_running: std::collections::HashSet<String> = {
+                let s = state.read().await;
+                s.step_order
+                    .iter()
+                    .filter(|id| {
+                        let st = s.steps.get(*id).unwrap();
+                        matches!(st.state, StepRuntimeState::Running { .. })
+                    })
+                    .cloned()
+                    .collect()
+            };
+            for id in &to_cancel {
                 set_step_state(&state, id, StepRuntimeState::Cancelled, &broadcaster).await;
                 done_or_terminal.insert(id.clone());
             }
+            // Los Running ya se marcaron Cancelled — descontamos del
+            // contador para que el loop pueda terminar aunque sus tasks
+            // sigan corriendo un toque en background (TCP en cierre).
+            running_count = running_count.saturating_sub(was_running.len());
             to_launch.clear();
         }
 
@@ -747,6 +772,19 @@ async fn supervisor_and_scheduler(
                 });
             }
             StepUpdate::Completed { row_count, sample } => {
+                // Si ya quedó terminal (cancel previo), descartamos el
+                // Completed que llega tarde.
+                let already_terminal = {
+                    let s = state.read().await;
+                    s.steps
+                        .get(&msg.step_id)
+                        .map(|i| i.state.is_terminal())
+                        .unwrap_or(false)
+                };
+                if already_terminal {
+                    done_or_terminal.insert(msg.step_id.clone());
+                    continue;
+                }
                 let started_at = step_started_at
                     .get(&msg.step_id)
                     .copied()
@@ -802,21 +840,37 @@ async fn supervisor_and_scheduler(
             StepUpdate::Failed { error } => {
                 // Línea de log con el error completo, para que aparezca en
                 // "Revisión de logs" sin tener que mirar el state crudo.
+                // Si el step ya está terminal (ej. lo cancelamos antes
+                // por cancel global o cancel-step y la task SQL retornó
+                // tarde con Err), preservamos el state existente y solo
+                // agregamos el log.
+                let already_terminal: bool;
                 {
                     let mut s = state.write().await;
                     if let Some(info) = s.steps.get_mut(&msg.step_id) {
+                        already_terminal = info.state.is_terminal();
                         info.logs.push(LogLine {
                             at: Utc::now(),
                             level: "error".to_string(),
                             line: format!("step falló: {error}"),
                         });
-                        info.state = StepRuntimeState::Failed {
-                            started_at: None,
-                            finished_at: Utc::now(),
-                            error: error.clone(),
-                        };
-                        info.sql_session = None;
+                        if !already_terminal {
+                            info.state = StepRuntimeState::Failed {
+                                started_at: None,
+                                finished_at: Utc::now(),
+                                error: error.clone(),
+                            };
+                            info.sql_session = None;
+                        }
+                    } else {
+                        already_terminal = false;
                     }
+                }
+                if already_terminal {
+                    // Solo asegurarse de que no sigue contando como Running
+                    // y seguir al próximo mensaje. No emitimos state change.
+                    done_or_terminal.insert(msg.step_id.clone());
+                    continue;
                 }
                 let _ = broadcaster.send(ProgressEvent::StepLog {
                     step_id: msg.step_id.clone(),
@@ -882,6 +936,17 @@ async fn supervisor_and_scheduler(
                 recompute_eta(&state, &broadcaster, &timings, &step_started_at).await;
             }
             StepUpdate::Cancelled => {
+                let already_terminal = {
+                    let s = state.read().await;
+                    s.steps
+                        .get(&msg.step_id)
+                        .map(|i| i.state.is_terminal())
+                        .unwrap_or(false)
+                };
+                if already_terminal {
+                    done_or_terminal.insert(msg.step_id.clone());
+                    continue;
+                }
                 set_step_state(&state, &msg.step_id, StepRuntimeState::Cancelled, &broadcaster)
                     .await;
                 done_or_terminal.insert(msg.step_id.clone());
