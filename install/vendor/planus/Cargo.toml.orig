@@ -1,0 +1,29 @@
+[package]
+name = "planus"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+readme = "README.md"
+keywords = ["flatbuffers", "serialization", "zero-copy"]
+categories = ["encoding", "data-structures", "memory-management"]
+rust-version.workspace = true
+description = "Planus is an alternative compiler for flatbuffers, an efficient cross platform serialization library."
+
+[features]
+default = ["std", "vtable-cache", "string-cache", "bytes-cache"]
+std = []
+extra-validation = []
+bytes-cache = ["hashbrown"]
+string-cache = ["hashbrown"]
+vtable-cache = ["hashbrown"]
+
+[dependencies]
+hashbrown = { workspace = true, optional = true }
+
+# Our crates
+array-init-cursor.workspace = true
+
+[dev-dependencies]
+planus-example.workspace = true # used for doctests
+rand.workspace = true

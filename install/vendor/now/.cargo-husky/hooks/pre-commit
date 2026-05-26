@@ -1,0 +1,10 @@
+#!/bin/sh
+
+cargo fmt --all -- --check
+[ $? -eq 0 ]  || exit 1
+
+cargo clippy --all-targets -- -D warnings
+[ $? -eq 0 ]  || exit 1
+
+cargo test
+[ $? -eq 0 ]  || exit 1

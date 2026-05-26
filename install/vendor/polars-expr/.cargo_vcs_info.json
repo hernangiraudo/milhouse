@@ -1,0 +1,7 @@
+{
+  "git": {
+    "sha1": "0a90b3ade10c24ce664c50c921b14efcee006531",
+    "dirty": true
+  },
+  "path_in_vcs": "crates/polars-expr"
+}

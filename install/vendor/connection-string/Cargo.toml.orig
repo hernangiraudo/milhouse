@@ -1,0 +1,15 @@
+[package]
+name = "connection-string"
+version = "0.2.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/prisma/connection-string"
+documentation = "https://docs.rs/connection-string"
+description = "Connection string parsing in Rust (and WebAssembly)"
+readme = "README.md"
+edition = "2021"
+rust = "1.46"
+keywords = []
+categories = []
+
+[profile.release]
+lto = true

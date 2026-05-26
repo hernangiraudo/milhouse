@@ -1,0 +1,8 @@
+﻿# Pega esto en .cargo/config.toml de la maquina offline
+# (ajusta el path 'directory' si moviste el bundle)
+# Generado por scripts/download_crates.ps1
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "install/vendor"
