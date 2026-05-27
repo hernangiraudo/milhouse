@@ -784,6 +784,12 @@ step_sql_session, job_eta, job_finished
   Permite que polars+duckdb compilen razonable en debug.
 - **Binario `milhouse` resuelve paths relativos al cwd**, no a su ubicación.
   Hay que arrancarlo desde la raíz del repo. Los scripts `start.*` lo hacen.
+- **Linux: `unixodbc-dev` es pre-requisito para compilar**. La crate
+  `odbc-api` linkea contra `libodbc` y necesita los headers (`sql.h`,
+  `sqlext.h`). En Debian/Ubuntu: `sudo apt-get install -y unixodbc-dev`;
+  en Fedora/RHEL: `unixODBC-devel`; Arch: `unixodbc`. Los scripts
+  `setup.sh` e `install_offline.sh` lo chequean al inicio y abortan
+  con el comando exacto si falta.
 
 ### Schema DB
 - **`at` es reserved en DuckDB** — usar `ts` para timestamp en `step_logs`.

@@ -83,6 +83,24 @@ check_tool "cargo" "cargo --version"    || { c_yel "  Instala Rust: curl https:/
 check_tool "node"  "node --version"     || { c_yel "  Instala Node 18+ desde https://nodejs.org"; exit 1; }
 check_tool "corepack" "corepack --version" || { c_yel "  Actualiza Node a 16.10+ (incluye corepack)"; exit 1; }
 
+# Linux: chequear headers de unixODBC (los necesita la crate odbc-api al compilar).
+if [ "$(uname -s)" = "Linux" ]; then
+    if [ -f /usr/include/sql.h ] || [ -f /usr/local/include/sql.h ]; then
+        echo "  [OK]   unixodbc-dev (sql.h encontrado)"
+    else
+        c_red "  [FAIL] unixodbc-dev no instalado (falta sql.h)"
+        c_yel "         La crate odbc-api lo necesita para compilar."
+        if   command -v apt-get >/dev/null 2>&1; then c_yel "         sudo apt-get install -y unixodbc-dev"
+        elif command -v dnf     >/dev/null 2>&1; then c_yel "         sudo dnf install -y unixODBC-devel"
+        elif command -v yum     >/dev/null 2>&1; then c_yel "         sudo yum install -y unixODBC-devel"
+        elif command -v pacman  >/dev/null 2>&1; then c_yel "         sudo pacman -S unixodbc"
+        elif command -v zypper  >/dev/null 2>&1; then c_yel "         sudo zypper install unixODBC-devel"
+        else                                          c_yel "         Instala el paquete de headers de unixODBC con tu gestor de paquetes."
+        fi
+        exit 1
+    fi
+fi
+
 # ---------- 2. Vendor dir ----------
 echo
 echo "==> 2/5 Verificando crates vendorizados"
