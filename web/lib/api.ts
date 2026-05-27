@@ -7,10 +7,27 @@ import type {
 
 export type { ConfigSummary, ConnectionsResponse, JobState, JobSummary };
 
+const BACKEND_PORT = process.env.NEXT_PUBLIC_BACKEND_PORT ?? "8090";
+
+function defaultApiBase(): string {
+  if (typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}`;
+  }
+  return `http://localhost:${BACKEND_PORT}`;
+}
+
+function defaultWsBase(): string {
+  if (typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.hostname}:${BACKEND_PORT}`;
+  }
+  return `ws://localhost:${BACKEND_PORT}`;
+}
+
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8090";
+  process.env.NEXT_PUBLIC_API_BASE ?? defaultApiBase();
 export const WS_BASE =
-  process.env.NEXT_PUBLIC_WS_BASE ?? "ws://localhost:8090";
+  process.env.NEXT_PUBLIC_WS_BASE ?? defaultWsBase();
 
 export async function listConfigs(): Promise<ConfigSummary[]> {
   const r = await fetch(`${API_BASE}/api/configs`, { cache: "no-store" });
