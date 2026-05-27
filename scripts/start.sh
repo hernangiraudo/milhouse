@@ -65,12 +65,16 @@ open_browser() {
 # ---------------------------------------------------------------------
 # 0) Validar artefactos
 # ---------------------------------------------------------------------
-if [ -x "$ROOT/target/debug/milhouse" ]; then
+if [ -x "$ROOT/install/bin/milhouse" ]; then
+    BACKEND="$ROOT/install/bin/milhouse"
+elif [ -x "$ROOT/target/release/milhouse" ]; then
+    BACKEND="$ROOT/target/release/milhouse"
+elif [ -x "$ROOT/target/debug/milhouse" ]; then
     BACKEND="$ROOT/target/debug/milhouse"
 elif [ -x "$ROOT/target/debug/milhouse.exe" ]; then
     BACKEND="$ROOT/target/debug/milhouse.exe"
 else
-    c_red "Backend no compilado. Corré primero: ./scripts/setup.sh"
+    c_red "Backend no compilado. Corré primero: ./scripts/setup.sh o ./scripts/install_offline.sh"
     exit 1
 fi
 
