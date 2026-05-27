@@ -1,0 +1,4 @@
+# Crates vendorizados: cargo verifica cada archivo contra el sha256 en
+# .cargo-checksum.json. Si git normaliza line endings (CRLF<->LF) o
+# expande $Id$, el build offline rompe. Tratar todo como binario.
+install/vendor/** -text -diff -merge
