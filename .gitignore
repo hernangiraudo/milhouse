@@ -8,6 +8,7 @@
 /data/preloaded/*
 !/data/preloaded/.gitkeep
 /bundle/
+/install/bin/
 /.cargo/
 /web/node_modules
 /web/.next
