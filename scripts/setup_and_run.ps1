@@ -10,9 +10,9 @@
 #      lockeando el binario en target\debug.
 #   2. Llama a scripts\setup.ps1 (toolchains, cargo build, seed, deps
 #      del front). Idempotente.
-#   3. Si el setup terminó OK, llama a scripts\start.ps1: arranca back
-#      en :8090 y front en :3000 en ventanas separadas, espera al
-#      front y abre el navegador.
+#   3. Si el setup terminó OK, llama a scripts\run.ps1: arranca back
+#      en :8090 y front en :3000 en background (sin ventanas), espera
+#      al front y abre el navegador.
 #
 # Parámetros:
 #   -Rows N        cantidad de transacciones del demo (default 50000)
@@ -20,7 +20,7 @@
 #   -Force         no preguntar antes de matar procesos previos
 #   -NoBrowser     no abrir el browser al final
 #
-# Para frenar todo: cerrá ambas ventanas que abrió start.ps1.
+# Para frenar todo: .\scripts\stop.ps1
 
 param(
     [int]$Rows = 50000,
@@ -57,10 +57,10 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-# 2) Start
+# 2) Run
 Write-Host ""
 Write-Host "==> Arrancando servidores..." -ForegroundColor Cyan
-$startArgs = @()
-if ($Force)     { $startArgs += "-Force" }
-if ($NoBrowser) { $startArgs += "-NoBrowser" }
-& (Join-Path $PSScriptRoot "start.ps1") @startArgs
+$runArgs = @()
+if ($Force)     { $runArgs += "-Force" }
+if ($NoBrowser) { $runArgs += "-NoBrowser" }
+& (Join-Path $PSScriptRoot "run.ps1") @runArgs

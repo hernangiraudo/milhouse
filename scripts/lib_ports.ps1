@@ -1,4 +1,4 @@
-# Helpers compartidos por setup_and_run.ps1 y start.ps1 para liberar los
+# Helpers compartidos por setup_and_run.ps1 y run.ps1 para liberar los
 # puertos del backend/frontend antes de compilar/arrancar. Dot-source only
 # (no se ejecuta directo). Define:
 #   Get-PortOwners <port>                  devuelve [PSCustomObject]@{ Pid, Name, Path }
