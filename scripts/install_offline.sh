@@ -234,7 +234,7 @@ if [ "$INSTALL_SERVICE" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
 else
     echo "  Backend:   $ROOT/install/bin/milhouse"
     echo "  Frontend:  cd $ROOT/web && corepack pnpm dev"
-    echo "  O todo junto: ./scripts/start.sh"
+    echo "  O todo junto: ./scripts/run.sh"
 fi
 echo
 echo "Puerto backend: $BACKEND_PORT  →  http://localhost:$BACKEND_PORT"

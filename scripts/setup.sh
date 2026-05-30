@@ -9,7 +9,7 @@
 #   ROWS=50000   cantidad de transacciones a generar en demo.duckdb
 #   FORCE_SEED=1 regenera la base aunque exista
 #
-# NO arranca servidores. Usá ./scripts/start.sh.
+# NO arranca servidores. Usá ./scripts/run.sh.
 
 set -euo pipefail
 
@@ -116,7 +116,7 @@ c_grn "Setup completo."
 c_grn "=================================="
 echo
 echo "Para arrancar Milhouse:"
-echo "    ./scripts/start.sh"
+echo "    ./scripts/run.sh"
 echo
 echo "O manualmente:"
 echo "    1. cargo run --bin milhouse        (en una terminal)"

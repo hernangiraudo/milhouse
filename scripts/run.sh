@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Arranca backend y frontend en background. Logs en data/run/*.log.
-# Frena con Ctrl+C (mata ambos).
+# Arranca backend y frontend desacoplados de la sesión SSH.
+# Los procesos siguen corriendo si cerrás la terminal o se cae la conexión.
+# Logs en data/run/backend.log y data/run/frontend.log.
+# PIDs en data/run/backend.pid y data/run/frontend.pid.
+# Para frenar: ./scripts/stop.sh
 #
-#   ./scripts/start.sh
+#   ./scripts/run.sh
 #
 # Flags:
 #   --force        no preguntar antes de matar procesos previos en :8090/:3000
@@ -92,29 +95,25 @@ if ! stop_port_owners "$BACKEND_PORT"  "backend"  "$FORCE"; then exit 1; fi
 if ! stop_port_owners "$FRONTEND_PORT" "frontend" "$FORCE"; then exit 1; fi
 
 # ---------------------------------------------------------------------
-# 2) Arrancar backend + frontend
+# 2) Arrancar backend + frontend con nohup (sobreviven al cierre de SSH)
 # ---------------------------------------------------------------------
 c_cyan "==> Backend en http://localhost:$BACKEND_PORT"
-"$BACKEND" > data/run/backend.log 2>&1 &
+nohup "$BACKEND" > data/run/backend.log 2>&1 &
 BACKEND_PID=$!
-echo "    PID: $BACKEND_PID · logs: data/run/backend.log"
+echo "$BACKEND_PID" > data/run/backend.pid
+c_dim "    PID: $BACKEND_PID · logs: data/run/backend.log"
 
 sleep 2
 
 c_cyan "==> Frontend en http://localhost:$FRONTEND_PORT"
-(cd web && corepack pnpm dev > "$ROOT/data/run/frontend.log" 2>&1) &
+nohup bash -c "cd '${ROOT}/web' && exec corepack pnpm dev" > "$ROOT/data/run/frontend.log" 2>&1 &
 FRONTEND_PID=$!
-echo "    PID: $FRONTEND_PID · logs: data/run/frontend.log"
+echo "$FRONTEND_PID" > data/run/frontend.pid
+c_dim "    PID: $FRONTEND_PID · logs: data/run/frontend.log"
 
-cleanup() {
-    echo
-    c_cyan "==> Frenando..."
-    kill "$BACKEND_PID" 2>/dev/null || true
-    kill "$FRONTEND_PID" 2>/dev/null || true
-    wait 2>/dev/null || true
-    echo "Listo."
-}
-trap cleanup INT TERM
+echo
+c_dim "    Para frenar: ./scripts/stop.sh"
+echo
 
 # ---------------------------------------------------------------------
 # 3) Esperar al frontend y abrir el navegador
@@ -129,13 +128,5 @@ if [ "$OPEN_BROWSER" -eq 1 ]; then
         c_yellow "El frontend no respondió en 60s — abrí $FRONT_URL a mano cuando termine de compilar."
     fi
 else
-    echo
     echo "Listo. Abrí $FRONT_URL en tu navegador."
 fi
-
-echo
-echo "Ctrl+C para frenar ambos."
-echo
-
-# Esperar a que termine cualquiera de los dos.
-wait

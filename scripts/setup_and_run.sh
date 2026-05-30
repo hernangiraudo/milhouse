@@ -11,18 +11,19 @@
 #      corriendo y lockea el .exe.
 #   2. Corre ./scripts/setup.sh (verifica toolchains, compila el backend,
 #      genera la base demo, instala deps del frontend). Idempotente.
-#   3. Si el setup terminó OK, corre ./scripts/start.sh: arranca backend
-#      y frontend, espera al frontend y abre el navegador.
+#   3. Si el setup terminó OK, corre ./scripts/run.sh: arranca backend
+#      y frontend desacoplados de la sesión SSH, espera al frontend y
+#      abre el navegador.
 #
 # Variables (se reenvían al setup):
 #   ROWS=50000      cantidad de transacciones del demo
 #   FORCE_SEED=1    regenera demo.duckdb aunque exista
 #
-# Flags (se reenvían al start):
+# Flags (se reenvían al run):
 #   --force         no preguntar antes de matar procesos previos
 #   --no-browser    no abrir el browser al final
 #
-# Para frenar todo: Ctrl+C en esta terminal (mata back+front).
+# Para frenar todo: ./scripts/stop.sh
 
 set -euo pipefail
 
@@ -35,7 +36,7 @@ c_red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 c_yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 c_dim()    { printf '\033[90m%s\033[0m\n' "$*"; }
 
-# Parsear flags reenviables al start.sh
+# Parsear flags reenviables al run.sh
 FORCE=0
 for arg in "$@"; do
     case "$arg" in
@@ -63,7 +64,7 @@ if ! bash "$SCRIPT_DIR/setup.sh"; then
     exit 1
 fi
 
-# 2) Start (reenvía cualquier flag tipo --force / --no-browser)
+# 2) Run (reenvía cualquier flag tipo --force / --no-browser)
 echo
 c_cyan "==> Arrancando servidores..."
-bash "$SCRIPT_DIR/start.sh" "$@"
+bash "$SCRIPT_DIR/run.sh" "$@"
