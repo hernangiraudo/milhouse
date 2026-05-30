@@ -14,6 +14,15 @@ import {
 } from "@/lib/api";
 import type { ConnectionsResponse, ConnectionSummary } from "@/lib/types";
 import { useDialog } from "./Dialog";
+import {
+  Pencil,
+  Copy,
+  Trash2,
+  RefreshCw,
+  Plus,
+  ChevronDown,
+  Star,
+} from "lucide-react";
 
 type TypeKey =
   | "duckdb"
@@ -26,16 +35,18 @@ type TypeKey =
 
 const TYPE_STYLES: Record<
   string,
-  { color: string; glyph: string; label: string }
+  { color: string; label: string; short: string }
 > = {
-  duckdb: { color: "#10b981", glyph: "🦆", label: "DuckDB (archivo)" },
-  duckdb_memory: { color: "#06b6d4", glyph: "⚡", label: "DuckDB (memoria)" },
-  sql_server: { color: "#ef4444", glyph: "🟦", label: "SQL Server (nativo)" },
-  mysql: { color: "#0ea5e9", glyph: "🐬", label: "MySQL (nativo)" },
-  odbc: { color: "#f97316", glyph: "🔌", label: "ODBC" },
-  postgres: { color: "#3b82f6", glyph: "🐘", label: "Postgres" },
-  sqlite: { color: "#a855f7", glyph: "📦", label: "SQLite" },
+  duckdb:        { color: "#10b981", label: "DuckDB (archivo)",   short: "DuckDB" },
+  duckdb_memory: { color: "#06b6d4", label: "DuckDB (memoria)",   short: "DuckDB :mem:" },
+  sql_server:    { color: "#ef4444", label: "SQL Server (nativo)", short: "SQL Server" },
+  mysql:         { color: "#0ea5e9", label: "MySQL (nativo)",     short: "MySQL" },
+  odbc:          { color: "#f97316", label: "ODBC",               short: "ODBC" },
+  postgres:      { color: "#3b82f6", label: "Postgres",           short: "Postgres" },
+  sqlite:        { color: "#a855f7", label: "SQLite",             short: "SQLite" },
 };
+
+type LightStatus = "ok" | "running" | "error" | "idle";
 
 export function ConnectionsPanel() {
   const dialog = useDialog();
@@ -45,19 +56,71 @@ export function ConnectionsPanel() {
   const [editing, setEditing] = useState<ConnectionSummary | null>(null);
   const [creating, setCreating] = useState(false);
   // resultado de test por conexión.
-  const [testResult, setTestResult] = useState<Record<string, TestConnectionResult & { running?: boolean }>>({});
+  const [testResult, setTestResult] = useState<
+    Record<string, TestConnectionResult & { running?: boolean }>
+  >({});
 
   async function load() {
     try {
       const d = await listConnections();
       setData(d);
       setErr(null);
+      return d;
     } catch (e) {
       setErr(String(e));
+      return null;
     }
   }
+
+  /** Testea una sola conexión actualizando su estado en testResult. */
+  async function testOne(name: string, implemented: boolean) {
+    if (!implemented) {
+      // Las placeholder no se testean — quedan en "idle".
+      setTestResult((p) => {
+        const next = { ...p };
+        delete next[name];
+        return next;
+      });
+      return;
+    }
+    setTestResult((p) => ({ ...p, [name]: { ok: false, running: true } }));
+    try {
+      const r = await testConnection(name);
+      setTestResult((p) => ({ ...p, [name]: r }));
+    } catch (e) {
+      setTestResult((p) => ({
+        ...p,
+        [name]: { ok: false, error: String(e) },
+      }));
+    }
+  }
+
+  /** Testea todas las conexiones implementadas en paralelo. */
+  async function testAll(conns: ConnectionSummary[]) {
+    const targets = conns.filter((c) => c.implemented);
+    if (targets.length === 0) return;
+    setTestResult((p) => {
+      const next = { ...p };
+      for (const c of targets) {
+        next[c.name] = { ok: false, running: true };
+      }
+      return next;
+    });
+    await Promise.all(targets.map((c) => testOne(c.name, c.implemented)));
+  }
+
+  // Al entrar a la sección: cargar y disparar test de todas.
   useEffect(() => {
-    load();
+    let cancelled = false;
+    (async () => {
+      const d = await load();
+      if (cancelled || !d) return;
+      await testAll(d.connections);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function onReload() {
@@ -65,12 +128,18 @@ export function ConnectionsPanel() {
     setErr(null);
     try {
       await reloadConnections();
-      await load();
+      const d = await load();
+      if (d) await testAll(d.connections);
     } catch (e) {
       setErr(String(e));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function onRetestAll() {
+    if (!data) return;
+    await testAll(data.connections);
   }
 
   async function onDelete(name: string) {
@@ -91,7 +160,6 @@ export function ConnectionsPanel() {
   async function onDuplicate(c: ConnectionSummary) {
     const existing = new Set(data?.connections.map((x) => x.name) ?? []);
     const base = `${c.name} (copia)`;
-    // Si "Foo (copia)" ya existe, probar "Foo (copia 2)", etc.
     let defaultName = base;
     let n = 2;
     while (existing.has(defaultName)) {
@@ -128,47 +196,88 @@ export function ConnectionsPanel() {
     }
   }
 
-  async function onTest(c: ConnectionSummary) {
-    setTestResult((p) => ({
-      ...p,
-      [c.name]: { ok: false, running: true },
-    }));
-    try {
-      const r = await testConnection(c.name);
-      setTestResult((p) => ({ ...p, [c.name]: r }));
-    } catch (e) {
-      setTestResult((p) => ({
-        ...p,
-        [c.name]: { ok: false, error: String(e) },
-      }));
-    }
+  function statusOf(c: ConnectionSummary): LightStatus {
+    if (!c.implemented) return "idle";
+    const r = testResult[c.name];
+    if (!r) return "idle";
+    if (r.running) return "running";
+    return r.ok ? "ok" : "error";
   }
+
+  const counts = (() => {
+    const out = { ok: 0, error: 0, running: 0, idle: 0, total: 0 };
+    if (!data) return out;
+    for (const c of data.connections) {
+      out.total++;
+      out[statusOf(c)]++;
+    }
+    return out;
+  })();
 
   return (
     <section className="space-y-4">
-      <div className="bg-panel rounded-xl p-6 border border-slate-800">
-        <div className="flex items-center justify-between flex-wrap gap-2">
+      <div className="bg-panel rounded-xl p-5 border border-surface">
+        <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h2 className="font-semibold text-lg">Conexiones</h2>
             <p className="text-sm text-muted">
               Bases de datos y orígenes ODBC disponibles para los proyectos.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <code className="text-xs text-dim">configs/connections.json</code>
+          <div className="flex items-center gap-2 flex-wrap">
+            {data && (
+              <div
+                className="flex items-center gap-3 text-xs px-3 py-1.5 rounded border border-surface bg-surface-2"
+                title="Estado de las conexiones tras el último test"
+              >
+                <span className="flex items-center gap-1.5">
+                  <StatusLight status="ok" size={8} />
+                  <span className="text-app font-medium">{counts.ok}</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <StatusLight status="running" size={8} />
+                  <span className="text-app font-medium">{counts.running}</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <StatusLight status="error" size={8} />
+                  <span className="text-app font-medium">{counts.error}</span>
+                </span>
+                {counts.idle > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <StatusLight status="idle" size={8} />
+                    <span className="text-app font-medium">{counts.idle}</span>
+                  </span>
+                )}
+              </div>
+            )}
+            <button
+              onClick={onRetestAll}
+              disabled={!data || counts.running > 0}
+              className="text-xs px-2.5 py-1.5 rounded border border-surface-strong bg-surface-2 hover:bg-surface text-app flex items-center gap-1.5 disabled:opacity-50"
+              title="Volver a testear todas las conexiones"
+            >
+              <RefreshCw
+                size={13}
+                strokeWidth={2}
+                className={counts.running > 0 ? "animate-spin" : ""}
+              />
+              Re-testear
+            </button>
             <button
               onClick={onReload}
               disabled={busy}
-              className="text-xs px-2 py-1 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800 disabled:opacity-50"
+              className="text-xs px-2.5 py-1.5 rounded border border-surface-strong bg-surface-2 hover:bg-surface text-app disabled:opacity-50"
+              title="Recargar configs/connections.json desde disco"
             >
-              {busy ? "Recargando…" : "Recargar"}
+              {busy ? "Recargando…" : "Recargar archivo"}
             </button>
             <button
               onClick={() => setCreating(true)}
-              className="text-xs font-semibold px-3 py-1 rounded"
+              className="text-xs font-semibold px-3 py-1.5 rounded flex items-center gap-1"
               style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
             >
-              + Agregar
+              <Plus size={13} strokeWidth={2.5} />
+              Agregar
             </button>
           </div>
         </div>
@@ -176,10 +285,10 @@ export function ConnectionsPanel() {
       </div>
 
       {!data && !err && (
-        <div className="text-slate-500 text-sm">Cargando…</div>
+        <div className="text-muted text-sm">Cargando…</div>
       )}
       {data && data.connections.length === 0 && (
-        <div className="bg-panel border border-slate-800 rounded-xl p-6 text-slate-500 text-sm">
+        <div className="bg-panel border border-surface rounded-xl p-6 text-muted text-sm">
           No hay conexiones definidas. Click en "+ Agregar".
         </div>
       )}
@@ -190,9 +299,10 @@ export function ConnectionsPanel() {
               key={c.name}
               c={c}
               testResult={testResult[c.name]}
+              status={statusOf(c)}
               onEdit={() => setEditing(c)}
               onDelete={() => onDelete(c.name)}
-              onTest={() => onTest(c)}
+              onTest={() => testOne(c.name, c.implemented)}
               onDuplicate={() => onDuplicate(c)}
             />
           ))}
@@ -205,7 +315,8 @@ export function ConnectionsPanel() {
           onClose={() => setCreating(false)}
           onSaved={async () => {
             setCreating(false);
-            await load();
+            const d = await load();
+            if (d) await testAll(d.connections);
           }}
         />
       )}
@@ -215,8 +326,13 @@ export function ConnectionsPanel() {
           existing={editing}
           onClose={() => setEditing(null)}
           onSaved={async () => {
+            const name = editing.name;
             setEditing(null);
-            await load();
+            const d = await load();
+            if (d) {
+              const fresh = d.connections.find((x) => x.name === name);
+              if (fresh) await testOne(fresh.name, fresh.implemented);
+            }
           }}
         />
       )}
@@ -224,9 +340,48 @@ export function ConnectionsPanel() {
   );
 }
 
+/** Luz tipo semáforo: ok=verde, running=amarillo pulsante, error=rojo, idle=gris. */
+function StatusLight({
+  status,
+  size = 10,
+}: {
+  status: LightStatus;
+  size?: number;
+}) {
+  const color =
+    status === "ok"
+      ? "#10b981"
+      : status === "running"
+      ? "#f59e0b"
+      : status === "error"
+      ? "#ef4444"
+      : "#64748b";
+  return (
+    <span
+      className={`inline-block rounded-full ${
+        status === "running" ? "animate-pulse" : ""
+      }`}
+      style={{
+        width: size,
+        height: size,
+        background: color,
+        boxShadow:
+          status === "ok"
+            ? "0 0 6px rgba(16,185,129,0.6)"
+            : status === "running"
+            ? "0 0 6px rgba(245,158,11,0.6)"
+            : status === "error"
+            ? "0 0 6px rgba(239,68,68,0.6)"
+            : "none",
+      }}
+    />
+  );
+}
+
 function ConnectionCard({
   c,
   testResult,
+  status,
   onEdit,
   onDelete,
   onTest,
@@ -234,96 +389,151 @@ function ConnectionCard({
 }: {
   c: ConnectionSummary;
   testResult?: TestConnectionResult & { running?: boolean };
+  status: LightStatus;
   onEdit: () => void;
   onDelete: () => void;
   onTest: () => void;
   onDuplicate: () => void;
 }) {
   const t =
-    TYPE_STYLES[c.type] ?? { color: "#94a3b8", glyph: "?", label: c.type };
+    TYPE_STYLES[c.type] ?? { color: "#94a3b8", label: c.type, short: c.type };
+
+  // Resumen del endpoint para mostrar arriba sin abrir detalles. Para los
+  // motores con host/port mostramos host:port, para archivo el path.
+  const endpoint = (() => {
+    const s = c.spec;
+    if (typeof s?.host === "string") {
+      const port = s.port != null ? `:${s.port}` : "";
+      return `${s.host}${port}`;
+    }
+    if (typeof s?.path === "string") return s.path as string;
+    if (typeof s?.connection_string === "string") {
+      const cs = s.connection_string as string;
+      return cs.length > 40 ? cs.slice(0, 40) + "…" : cs;
+    }
+    return null;
+  })();
+
   return (
     <div
-      className="rounded-lg border bg-surface-2 p-3 relative"
-      style={{ borderColor: c.implemented ? t.color : "#475569" }}
+      className="rounded-lg border bg-surface-2 p-3 relative flex flex-col gap-2"
+      style={{
+        borderColor: status === "error" ? "#b91c1c" : "var(--surface-strong, #334155)",
+      }}
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span style={{ color: t.color }}>{t.glyph}</span>
-          <code className="font-semibold text-slate-100">{c.name}</code>
-        </div>
-        <div className="flex items-center gap-1">
-          {c.is_default && (
-            <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-700">
-              default
-            </span>
-          )}
-          {!c.implemented && (
-            <span
-              className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-700"
-              title="Declarada en el archivo pero no implementada en este MVP"
-            >
-              placeholder
-            </span>
-          )}
-        </div>
-      </div>
-      <div className="text-xs mt-1" style={{ color: t.color }}>
-        {t.label}
-      </div>
-      {c.description && (
-        <div className="text-xs text-muted mt-2 leading-snug">
-          {c.description}
-        </div>
-      )}
-      <SpecLines spec={c.spec} />
-
-      {/* Resultado del último test, si lo hubo */}
-      {testResult && (
-        <div
-          className={`mt-2 text-[11px] rounded px-2 py-1 ${
-            testResult.running
-              ? "bg-slate-500/20 text-slate-300"
-              : testResult.ok
-              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-700"
-              : "bg-red-500/20 text-red-300 border border-red-700"
-          }`}
-        >
-          {testResult.running
-            ? "Testeando…"
-            : testResult.ok
-            ? `✓ OK · ${testResult.latency_ms ?? "?"} ms · ${testResult.info ?? ""}`
-            : `✗ ${testResult.error ?? "falló"}`}
-        </div>
-      )}
-
-      <div className="flex gap-2 mt-3 text-xs">
+      {/* Header: semáforo + nombre + acciones rápidas */}
+      <div className="flex items-center gap-2">
         <button
           onClick={onTest}
           disabled={!c.implemented || testResult?.running}
-          className="px-2 py-1 rounded border border-emerald-700 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/40 disabled:opacity-30"
+          className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full hover:bg-surface disabled:cursor-not-allowed"
+          title={
+            status === "ok"
+              ? `OK · ${testResult?.latency_ms ?? "?"} ms — click para re-testear`
+              : status === "running"
+              ? "Testeando…"
+              : status === "error"
+              ? `Falló: ${testResult?.error ?? ""} — click para reintentar`
+              : c.implemented
+              ? "Aún no testeada — click para testear"
+              : "Placeholder, no se testea"
+          }
         >
-          Test
+          <StatusLight status={status} size={11} />
         </button>
-        <button
-          onClick={onEdit}
-          className="px-2 py-1 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800"
-        >
-          Editar
-        </button>
-        <button
-          onClick={onDuplicate}
-          className="px-2 py-1 rounded border border-surface-strong bg-surface-2 hover:bg-slate-800"
-          title="Crear una copia con todos los parámetros incluyendo la contraseña"
-        >
-          Duplicar
-        </button>
-        <button
-          onClick={onDelete}
-          className="ml-auto px-2 py-1 rounded border border-red-700 bg-red-500/10 text-red-300 hover:bg-red-500/30"
-        >
-          Eliminar
-        </button>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <code className="font-semibold text-app truncate">{c.name}</code>
+            {c.is_default && (
+              <span
+                title="Conexión default del proyecto"
+                className="shrink-0"
+                style={{ color: "var(--accent)" }}
+              >
+                <Star size={12} strokeWidth={2.5} fill="currentColor" />
+              </span>
+            )}
+          </div>
+          <div className="text-[11px] flex items-center gap-1.5" style={{ color: t.color }}>
+            <span className="font-medium">{t.short}</span>
+            {!c.implemented && (
+              <span
+                className="text-[9px] uppercase tracking-wider px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-700"
+                title="Declarada en el archivo pero no implementada en este MVP"
+              >
+                placeholder
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            onClick={onEdit}
+            className="w-7 h-7 flex items-center justify-center rounded hover:bg-surface text-dim hover:text-app"
+            title="Editar"
+          >
+            <Pencil size={14} strokeWidth={2} />
+          </button>
+          <button
+            onClick={onDuplicate}
+            className="w-7 h-7 flex items-center justify-center rounded hover:bg-surface text-dim hover:text-app"
+            title="Duplicar (incluye password)"
+          >
+            <Copy size={14} strokeWidth={2} />
+          </button>
+          <button
+            onClick={onDelete}
+            className="w-7 h-7 flex items-center justify-center rounded hover:bg-red-500/20 text-dim hover:text-red-400"
+            title="Eliminar"
+          >
+            <Trash2 size={14} strokeWidth={2} />
+          </button>
+        </div>
       </div>
+
+      {/* Endpoint compacto */}
+      {endpoint && (
+        <div
+          className="text-[11px] font-mono text-muted truncate"
+          title={endpoint}
+        >
+          {endpoint}
+        </div>
+      )}
+
+      {/* Descripción si la hay */}
+      {c.description && (
+        <div className="text-[11px] text-muted leading-snug">
+          {c.description}
+        </div>
+      )}
+
+      {/* Estado del último test cuando hubo error: visible sin abrir detalles */}
+      {status === "error" && testResult?.error && (
+        <div
+          className="text-[10px] rounded px-2 py-1 bg-red-500/10 text-red-300 border border-red-700 line-clamp-2"
+          title={testResult.error}
+        >
+          {testResult.error}
+        </div>
+      )}
+
+      {/* Detalles colapsables: spec completa + info de test */}
+      <details className="text-[11px] text-dim">
+        <summary className="cursor-pointer flex items-center gap-1 hover:text-app select-none">
+          <ChevronDown size={12} strokeWidth={2} className="transition-transform [details[open]_&]:rotate-180" />
+          Detalles
+        </summary>
+        <div className="mt-1.5 pl-1 space-y-1">
+          {status === "ok" && testResult && (
+            <div className="text-[10px] text-emerald-300">
+              ✓ OK · {testResult.latency_ms ?? "?"} ms
+              {testResult.info ? ` · ${testResult.info}` : ""}
+            </div>
+          )}
+          <SpecLines spec={c.spec} />
+        </div>
+      </details>
     </div>
   );
 }
@@ -337,11 +547,11 @@ function SpecLines({ spec }: { spec: Record<string, unknown> }) {
   }
   if (fields.length === 0) return null;
   return (
-    <div className="mt-2 text-[11px] font-mono space-y-0.5">
+    <div className="text-[11px] font-mono space-y-0.5">
       {fields.map(([k, v]) => (
-        <div key={k} className="text-slate-500">
-          <span className="text-slate-400">{k}:</span>{" "}
-          <span className="text-slate-300">{String(v)}</span>
+        <div key={k}>
+          <span className="text-dim">{k}:</span>{" "}
+          <span className="text-app">{String(v)}</span>
         </div>
       ))}
     </div>

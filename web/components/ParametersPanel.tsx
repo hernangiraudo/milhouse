@@ -1332,7 +1332,7 @@ export function DateOrDynamicInput({
           {(() => {
             const resolved = previewDynamicDate(value);
             return resolved
-              ? `→ resuelve a ${resolved} (hoy)`
+              ? `→ resuelve a ${formatIsoAsDDMM(resolved)} (hoy)`
               : `⚠ no se pudo resolver — chequeá la sintaxis`;
           })()}
         </div>
@@ -1456,4 +1456,35 @@ function fmt(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/** Convierte "YYYY-MM-DD" a "DD-MM-YYYY". Si no matchea, devuelve el
+ *  string original sin tocar. */
+export function formatIsoAsDDMM(s: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return s;
+  return `${m[3]}-${m[2]}-${m[1]}`;
+}
+
+/** Formatea un valor de parámetro de kind=date para mostrar en la UI.
+ *  - "YYYY-MM-DD" → "DD-MM-YYYY"
+ *  - expresión dinámica → "today - 20d (09-05-2026)"
+ *  - cualquier otro string → tal cual */
+export function formatDateValue(s: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return formatIsoAsDDMM(s);
+  const resolved = previewDynamicDate(s);
+  if (resolved) return `${s} (${formatIsoAsDDMM(resolved)})`;
+  return s;
+}
+
+/** Igual que formatDateValue pero auto-detecta si el string es una fecha
+ *  (ISO o expresión dinámica resoluble). Si no parece fecha, devuelve el
+ *  string tal cual. Útil cuando no se conoce el `kind` del parámetro. */
+export function formatMaybeDate(s: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return formatIsoAsDDMM(s);
+  // Solo formatear como fecha dinámica si efectivamente resuelve. Así no
+  // pisamos strings tipo "1000" o "abc" que casualmente parsea el parser.
+  const resolved = previewDynamicDate(s);
+  if (resolved) return `${s} (${formatIsoAsDDMM(resolved)})`;
+  return s;
 }

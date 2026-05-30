@@ -36,11 +36,11 @@ backend Rust (un solo crate)        frontend Next.js 14 App Router
 ├─ axum 0.7 HTTP + WebSocket        ├─ TailwindCSS (sin shadcn)
 ├─ polars 0.49 (tablas en memoria)  ├─ pnpm via corepack (`corepack pnpm`)
 ├─ duckdb 1.1 (bundled+polars)      ├─ Monaco (@monaco-editor/react)
-├─ tiberius 0.12 (SQL Server)       ├─ Tema claro/oscuro con tokens
-├─ mysql_async 0.34                    CSS + hook useTheme()
-├─ odbc-api 9                       └─ Sin codegen front/back: tipos a
-├─ rhai 1.20 (procedural)              mano en web/lib/types.ts mirror
-├─ petgraph implícito (DAG)            de los DTOs Rust
+├─ tiberius 0.12 (SQL Server)       ├─ lucide-react (iconos SVG)
+├─ mysql_async 0.34                 ├─ Tema claro/oscuro con tokens
+├─ odbc-api 9                          CSS + hook useTheme()
+├─ rhai 1.20 (procedural)           └─ Sin codegen front/back: tipos a
+├─ petgraph implícito (DAG)            mano en web/lib/types.ts mirror
 ├─ rust_xlsxwriter (export Excel)
 ├─ calamine 0.26 (read Excel)
 ├─ zip 2 (bundles de runs)
@@ -414,6 +414,8 @@ POST   /api/parameters/excel-import                 import con hoja/columna
 GET    /api/constants                               constantes globales {groups, constants}
 PUT    /api/constants                               reemplaza todo + persiste
 POST   /api/ai/build-step                          NL → step JSON
+POST   /api/ai/modify-step                         modificar step existente
+                                                    (preserva id + step_uid)
 POST   /api/ai/review-sql                          sugerencias sobre un SQL
 GET    /api/ai/available                           {available: bool}
 
@@ -890,6 +892,135 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **Fechas en formato DD-MM-YYYY con resuelto dinámico** (frontend):
+  - Nuevas helpers en `web/components/ParametersPanel.tsx`:
+    - `formatIsoAsDDMM("2026-05-29")` → `"29-05-2026"`.
+    - `formatDateValue(s)` — si es ISO devuelve DD-MM-YYYY; si es
+      expresión dinámica resoluble, devuelve `"today - 1d (28-05-2026)"`;
+      cualquier otro string lo devuelve tal cual.
+    - `formatMaybeDate(s)` — auto-detect cuando no se conoce el `kind`
+      (útil para "Ver valores resueltos" de presets).
+  - `formatParamDefault(value, kind?)` en `DesignEditor.tsx` ahora
+    acepta el kind y formatea fechas según las helpers anteriores.
+  - Lugares actualizados: preview "→ resuelve a ..." del
+    `DateOrDynamicInput`, "Respuesta global por defecto" en la sección
+    Parámetros, "Valor efectivo" en Valores de ejecución, "Ver valores
+    resueltos" de los grupos/presets activos.
+- **Rediseño del panel de Conexiones** (`ConnectionsPanel.tsx`):
+  - **Auto-test al entrar a la sección**: al montar el panel, dispara
+    `testConnection` en paralelo para todas las conexiones implementadas.
+    El usuario ve directamente el estado real sin tener que clickear.
+    El Reload del archivo y el guardar/crear/editar también disparan
+    re-test (uno o todos según corresponda).
+  - **Semáforo de estado** (`StatusLight`): círculo coloreado con glow
+    sutil. Verde = OK, amarillo pulsante = testeando, rojo = falló,
+    gris = idle (placeholder o no testeado todavía). El círculo es
+    clickeable y dispara un re-test individual.
+  - **Header con resumen** y contador por estado (🟢 N · 🟡 N · 🔴 N
+    · ⚪ N) + botón **Re-testear** con icono `RefreshCw` que spinea.
+  - **Cards más compactas**: muestran solo nombre, tipo en formato
+    corto coloreado (DuckDB, SQL Server, etc), endpoint resumido
+    (host:port o path), y descripción si la hay. Botones de acción
+    son iconos lucide (Pencil/Copy/Trash2). La spec completa va en
+    un `<details>` colapsable.
+  - Si hay error, el mensaje aparece visible en la card sin abrir nada
+    (line-clamp 2 + tooltip completo).
+  - Tipos coloreados con `TYPE_STYLES.short` (label corto) para no
+    repetir "(nativo)" en cada card.
+- **Iconos `lucide-react` en menú principal y editor de proyecto**
+  (`web/app/page.tsx` y `DesignEditor.tsx`):
+  - Reemplazo de emojis por SVG icons consistentes (16-20px, stroke 2).
+  - Menú principal: Diseño → `Pencil`, Parámetros → `SlidersHorizontal`,
+    Constantes → `Ruler`, Ejecutar → `Play`, Planificación →
+    `CalendarClock`, Logs → `ScrollText`, Casos → `FolderOpen`,
+    Conexiones → `Plug`, Monitor SQL → `Activity`, Usuarios → `Users`,
+    Roadmap → `Map`.
+  - Sidebar del editor: Lienzo → `Workflow`, Configuración → `Settings`,
+    Parámetros → `SlidersHorizontal`, Respuestas → `Play`, ← Volver →
+    `ArrowLeft`. Tooltips con `bg-slate-900 text-slate-50` (sólido,
+    alto contraste).
+  - Botón **Maximizar lienzo** (icono `Maximize2`/`Minimize2`) en la
+    toolbar del lienzo. Al activar, posiciona el root como
+    `fixed inset-0 z-50 bg-app` y oculta header/sidebar; al estar
+    en otra vista, fuerza `activeView = "canvas"`. Esc lo desactiva.
+- **Sección "Parámetros" como vista del sidebar** (editor de proyecto):
+  - El tab "Parámetros" salió de Configuración (que ahora solo tiene
+    General y API REST) y pasó a ser una entrada propia del sidebar.
+  - Contiene `ParametersPanel` (locales) + tabla de aplicación de
+    globales con toggles ★ Obligatorios / ○ Opcionales / — No aplica
+    (clases activas con tonos 300 y texto 950 — alto contraste).
+  - Cada global aplicado muestra "Respuesta global por defecto"
+    (read-only desde `g.default`) + "Respuesta por defecto del proyecto"
+    (editor por kind que pisa para este proyecto via `cfg.run_defaults`).
+- **Sección "Respuestas" (renombrada desde "Ejecución")** con 2 tabs:
+  - **Respuestas**: lista drag&drop con grupos (📦) + presets sueltos
+    (🏷) en una sola lista ordenable. El orden define prioridad
+    (último gana). El backend aplica grupos primero, después presets
+    sueltos, todos en orden — son nivel 3 de la cadena de fallbacks.
+    `<details>` "Ver valores resueltos" muestra el merge final con
+    origen.
+  - **Valores de ejecución**: tabla con valor efectivo, origen
+    (override sesión / run_default / preset suelto / grupo→preset /
+    param.default) y editor de override por sesión. Los overrides
+    viven en `sessionParamValues` (state de componente), no se
+    persisten; pre-rellenan el modal al ejecutar.
+- **Nuevo campo `EtlConfig.selected_presets: Vec<String>`** (backend):
+  - Permite seleccionar respuestas individuales (locales o globales)
+    a nivel proyecto, sin tener que crear un grupo de 1 elemento.
+  - Aplicados en `routes.rs` y `public.rs` después de los grupos —
+    mismo nivel 3, pero con menor precedencia (el grupo lo pisa).
+- **Botón "Salir" con 3 opciones** (`Dialog.choose` nuevo):
+  - Si hay cambios sin guardar al apretar ← Proyectos, modal con
+    Cancelar / Guardar y salir / Salir y descartar cambios (este
+    último en rojo). Si el guardado falla, queda en el editor.
+  - Sistema de diálogos extendido con `dialog.choose(msg, options[])`:
+    N botones tipados con `value`/`label`/`variant` (primary/secondary
+    /danger), devuelve el value o null si canceló.
+- **Guardar con opción de versionar**:
+  - El botón Guardar pregunta "Versión actual: N. ¿Cómo querés
+    guardar?" con Sobrescribir vN o Generar vN+1. Solo aplica si
+    el proyecto ya existe.
+- **Modal de parámetros muestra TODOS los params** (no solo los
+  faltantes), con badge ★ obligatorio / ○ opcional, valor resuelto
+  por la cadena de prioridad y origen visible. Permite override
+  inline + "↶ restaurar" para volver al heredado. Toggle "ocultar
+  los ya resueltos" para enfocarse en lo que falta. Solo bloquea
+  Ejecutar si falta un obligatorio.
+- **Milhouse-AI modify-step** (nueva feature):
+  - `POST /api/ai/modify-step` (backend): recibe `current_step` +
+    `instruction` + opcional `last_error` y devuelve un step
+    modificado preservando `id` y `step_uid`. Usa Claude haiku.
+  - `MODIFY_SYSTEM_PROMPT` específico para modificación
+    (`src/ai/mod.rs`). `call_anthropic_for_step` refactorizado para
+    aceptar el system prompt como parámetro (antes era constante).
+  - Botón "✨ Modificar con AI" / "✨ Corregir con AI" (rojo si el step
+    falló) en el toolbar de `StepEditor`. Si hay `lastError`, prefills
+    el textarea de instrucción con el mensaje del error.
+  - `StepAIModifyDialog` nuevo componente: modal con instrucción
+    multiline, `<details>` con el JSON actual, llamada al endpoint y
+    botón Aplicar que devuelve el step modificado al editor.
+  - `DesignEditor` deriva `lastError` desde `stepLogs` cuando
+    `stepStates[id] === "failed"` y lo pasa al `StepEditor` junto
+    con `existingTablesMap`.
+- **Scripts `setup_apikey.{ps1,sh}`**: configuran `ANTHROPIC_API_KEY`
+  en `.env` de forma idempotente (acepta key por env/arg o pregunta
+  interactivamente). Compatible con GNU sed y BSD sed (macOS).
+- **`setup_and_run` detiene servicios previos primero**: antes de
+  hacer cualquier cosa, llama a `stop.{ps1,sh}` (que mata por PID
+  files con fallback a puerto). Antes solo mataba por puerto y podía
+  dejar procesos huérfanos.
+- **Doble-click en nodo del canvas abre el editor del paso** como
+  vista propia (`activeView === "step"`) que reemplaza el lienzo.
+  Header con kind/id/status + StepEditor + logs. Botón "← Lienzo"
+  para volver.
+- **`sessionParamValues` (state)**: memoriza las respuestas del modal
+  de parámetros durante la sesión. Cada vez que se ejecuta, los
+  valores respondidos pre-rellenan el próximo prompt. Se descartan
+  al recargar la página.
+- **Nombre de conexiones legible en tema claro**: `text-slate-100` →
+  `text-app` en la card. Glyph de SQL Server: `🟦` → `🛢`.
+
+Anterior:
 - **Procedural con `input` opcional + mutación de params desde Rhai**:
   ahora un step `procedural` puede declarar `input: null` (o omitirlo).
   En ese caso el script corre **una sola vez** con `row` vacía — útil

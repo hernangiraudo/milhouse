@@ -175,6 +175,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/ai/available", get(routes::ai_available))
         .route("/api/ai/build-step", post(routes::ai_build_step))
+        .route("/api/ai/modify-step", post(routes::ai_modify_step))
         .route("/api/ai/review-sql", post(routes::ai_review_sql))
         .route(
             "/api/registry/procedural",

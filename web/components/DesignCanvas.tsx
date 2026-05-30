@@ -406,6 +406,8 @@ export interface DesignCanvasProps {
   importedStepIds?: string[];
   /** Click sobre el icono de tabla a la salida de un paso. */
   onOpenTable?: (stepId: string) => void;
+  /** Doble-click sobre un nodo: abre la vista de edición del paso. */
+  onDoubleClickStep?: (stepId: string) => void;
 }
 
 export function DesignCanvas({
@@ -427,6 +429,7 @@ export function DesignCanvas({
   tablesAvailable,
   importedStepIds,
   onOpenTable,
+  onDoubleClickStep,
 }: DesignCanvasProps) {
   const importedSet = useMemo(
     () => new Set(importedStepIds ?? []),
@@ -538,6 +541,12 @@ export function DesignCanvas({
     } else {
       onSelectionChange([id]);
     }
+  }
+
+  function onNodeDoubleClick(e: React.MouseEvent, id: string) {
+    e.stopPropagation();
+    onSelectionChange([id]);
+    onDoubleClickStep?.(id);
   }
 
   function onNodeContextMenu(e: React.MouseEvent, id: string) {
@@ -896,6 +905,7 @@ export function DesignCanvas({
               key={n.id}
               transform={`translate(${n.x}, ${n.y})`}
               onClick={(e) => onNodeClick(e, n.id)}
+              onDoubleClick={(e) => onNodeDoubleClick(e, n.id)}
               onContextMenu={(e) => onNodeContextMenu(e, n.id)}
               style={{ cursor: "pointer", opacity: status === "skipped" ? 0.55 : 1 }}
             >

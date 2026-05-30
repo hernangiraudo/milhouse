@@ -68,7 +68,7 @@ export function ExecParamsPanel() {
     <section className="space-y-4">
       <header className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h2 className="font-semibold text-lg">Parámetros de Ejecución</h2>
+          <h2 className="font-semibold text-lg">Parámetros</h2>
           <p className="text-sm text-muted">
             Parámetros y respuestas guardadas <strong>globales</strong>{" "}
             compartidas entre todos los proyectos. Cada proyecto puede

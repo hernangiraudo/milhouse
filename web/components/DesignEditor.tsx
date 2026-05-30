@@ -28,10 +28,25 @@ import { useUser } from "@/lib/session";
 import { LogsPanel } from "./LogsPanel";
 import { SamplePanel } from "./SamplePanel";
 import type { LogLine, TableSample } from "@/lib/types";
-import { ParametersPanel, DateOrDynamicInput } from "./ParametersPanel";
+import {
+  ParametersPanel,
+  DateOrDynamicInput,
+  formatDateValue,
+  formatMaybeDate,
+} from "./ParametersPanel";
 import { RunQueuePanel } from "./RunQueuePanel";
 import { ParameterPromptDialog } from "./ParameterPromptDialog";
 import { ApiExposurePanel } from "./ApiExposurePanel";
+import {
+  Workflow,
+  Settings,
+  SlidersHorizontal,
+  Play,
+  ArrowLeft,
+  Maximize2,
+  Minimize2,
+  type LucideIcon,
+} from "lucide-react";
 
 export type ParamKind =
   | "date"
@@ -109,6 +124,9 @@ type ProjectShape = {
   /** Grupos de respuestas que aplican siempre al ejecutar este proyecto.
    *  Sus valores se mergean a run_defaults en runtime. */
   selected_preset_groups?: string[];
+  /** Presets individuales (locales o globales) que aplican siempre al
+   *  ejecutar este proyecto. Aplicados junto con los grupos. */
+  selected_presets?: string[];
   api?: ProjectApiConfig;
   settings?: ProjectSettings;
   duckdb_path?: string | null;
@@ -517,6 +535,42 @@ export function DesignEditor({
 
   const [showAI, setShowAI] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  // Vista activa en el área principal.
+  // "canvas" = lienzo, "step" = editor de paso, "config" = propiedades del proyecto,
+  // "exec" = propiedades de ejecución.
+  const [activeView, setActiveView] = useState<
+    "canvas" | "step" | "config" | "parameters" | "answers"
+  >("canvas");
+  // Sub-pestaña dentro de la vista Configuración.
+  const [configTab, setConfigTab] = useState<"general" | "api">("general");
+  // Sub-pestaña dentro de la vista Respuestas.
+  const [answersTab, setAnswersTab] = useState<"answers" | "values">("answers");
+  // Lienzo en modo pantalla completa: oculta header, sidebar y resto de la UI.
+  const [canvasMaximized, setCanvasMaximized] = useState(false);
+  // Esc salir de fullscreen. Al maximizar, forzar la vista a "canvas".
+  useEffect(() => {
+    if (!canvasMaximized) return;
+    setActiveView("canvas");
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setCanvasMaximized(false);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [canvasMaximized]);
+  // Filtro de visibilidad de parámetros globales por estado de aplicación.
+  // Por default mostramos todo; el usuario puede ocultar categorías para
+  // enfocarse.
+  const [globalFilter, setGlobalFilter] = useState<{
+    required: boolean;
+    optional: boolean;
+    none: boolean;
+  }>({ required: true, optional: true, none: true });
+  // Valores que el usuario ingresó en el último prompt de parámetros esta sesión.
+  // Se guardan para pre-rellenar el próximo prompt.
+  const [sessionParamValues, setSessionParamValues] = useState<Record<string, ParamValueJson>>({});
 
   useEffect(() => {
     if (cfg && selectedIdx != null && selectedIdx >= cfg.steps.length) {
@@ -995,11 +1049,17 @@ export function DesignEditor({
       return;
     }
     // Abrir prompt de parámetros + nombre de ejecución.
-    const needed = mergedParams.filter((p) => usedParamNames.has(p.name));
+    // Le pasamos TODOS los parámetros del proyecto (no solo los usados
+    // en el subset), para que el usuario vea siempre el panorama completo
+    // con valores resueltos por la cadena de prioridad.
     setParamPrompt({
-      params: needed,
+      params: mergedParams,
       defaultRunName: suggestedRunName,
-      onResolved: ({ values, runName }) => launch(values, runName),
+      onResolved: ({ values, runName }) => {
+        // Guardar los valores respondidos para pre-rellenar el próximo prompt.
+        setSessionParamValues((prev) => ({ ...prev, ...values }));
+        return launch(values, runName);
+      },
     });
   }
 
@@ -1147,8 +1207,11 @@ export function DesignEditor({
     }
   }
 
-  async function onSave() {
-    if (!cfg) return;
+  /** Ejecuta el guardado físico contra la API. No pregunta nada al usuario.
+   *  Usar `onSave()` para el flujo interactivo (ofrece elegir sobrescribir
+   *  vs nueva versión). */
+  async function doSave(mode: "overwrite" | "bump"): Promise<boolean> {
+    if (!cfg) return false;
     setErr(null);
     setSavingMsg("Guardando…");
     try {
@@ -1160,39 +1223,114 @@ export function DesignEditor({
         if (ids.has(s.id)) throw new Error(`Step duplicado: ${s.id}`);
         ids.add(s.id);
       }
+      const toSend =
+        mode === "bump"
+          ? { ...cfg, version: (cfg.version ?? 1) + 1 }
+          : cfg;
       let savedName: string;
       if (currentName) {
-        savedName = await updateConfig(currentName, cfg as Record<string, unknown>);
+        savedName = await updateConfig(
+          currentName,
+          toSend as Record<string, unknown>,
+        );
       } else {
         const filename = await slugifyFilename(cfg.name);
-        savedName = await createConfig(filename, cfg as Record<string, unknown>);
+        savedName = await createConfig(
+          filename,
+          toSend as Record<string, unknown>,
+        );
         // Si era nuevo, redirigir a la URL del proyecto creado.
         router.replace(`/design/${encodeURIComponent(savedName)}`);
-        return;
+        return true;
       }
-      setSavingMsg(`✓ Guardado como ${savedName}`);
+      setSavingMsg(
+        mode === "bump"
+          ? `✓ Guardado como ${savedName} (v${(cfg.version ?? 1) + 1})`
+          : `✓ Guardado como ${savedName}`,
+      );
       setTimeout(() => setSavingMsg(null), 3000);
       const fresh = (await getConfig(savedName)) as ProjectShape;
       setCfg(fresh);
       setDirty(false);
+      return true;
     } catch (e) {
       setErr(String(e));
       setSavingMsg(null);
+      return false;
     }
   }
 
+  async function onSave(): Promise<boolean> {
+    if (!cfg) return false;
+    // Proyecto nuevo: no ofrecemos elegir, solo se crea.
+    if (!currentName) return doSave("overwrite");
+    const choice = await dialog.choose<"overwrite" | "bump">(
+      `Versión actual: ${cfg.version ?? 1}. ¿Cómo querés guardar?`,
+      [
+        {
+          value: "overwrite",
+          label: `Sobrescribir v${cfg.version ?? 1}`,
+          variant: "primary",
+        },
+        {
+          value: "bump",
+          label: `Generar v${(cfg.version ?? 1) + 1}`,
+          variant: "secondary",
+        },
+      ],
+      { title: "Guardar proyecto" },
+    );
+    if (!choice) return false;
+    return doSave(choice);
+  }
+
+  // ── definición de las vistas del sidebar ────────────────────────────────
+  type SideView = "canvas" | "step" | "config" | "parameters" | "answers";
+  const sideItems: Array<{ id: SideView; Icon: LucideIcon; label: string }> = [
+    { id: "canvas",     Icon: Workflow,          label: "Lienzo" },
+    { id: "config",     Icon: Settings,          label: "Configuración" },
+    { id: "parameters", Icon: SlidersHorizontal, label: "Parámetros" },
+    { id: "answers",    Icon: Play,              label: "Respuestas" },
+  ];
+
   return (
-    <div className="space-y-4">
-      <header className="flex items-center justify-between flex-wrap gap-2">
+    <div
+      className={
+        canvasMaximized
+          ? "fixed inset-0 z-50 flex flex-col bg-app p-2"
+          : "flex flex-col"
+      }
+      style={canvasMaximized ? undefined : { minHeight: "calc(100vh - 80px)" }}
+    >
+      {/* ── header superior — oculto cuando el lienzo está maximizado ──── */}
+      {!canvasMaximized && (
+      <header className="flex items-center justify-between flex-wrap gap-2 mb-3">
         <div className="flex items-center gap-3">
           <button
             onClick={async () => {
               if (dirty) {
-                const ok = await dialog.confirm(
-                  "Hay cambios sin guardar. ¿Salir igualmente?",
-                  { title: "Cambios sin guardar", variant: "warning", ok: "Salir" },
+                const choice = await dialog.choose<"save" | "discard">(
+                  "Hay cambios sin guardar.",
+                  [
+                    {
+                      value: "save",
+                      label: "Guardar y salir",
+                      variant: "primary",
+                    },
+                    {
+                      value: "discard",
+                      label: "Salir y descartar cambios",
+                      variant: "danger",
+                    },
+                  ],
+                  { title: "Cambios sin guardar", variant: "warning" },
                 );
-                if (!ok) return;
+                if (!choice) return; // canceló
+                if (choice === "save") {
+                  const ok = await onSave();
+                  if (!ok) return; // falló el guardado, no salir
+                }
+                // choice === "discard" o save OK → salir
               }
               router.push("/");
             }}
@@ -1201,7 +1339,7 @@ export function DesignEditor({
             ← Proyectos
           </button>
           <h2 className="font-semibold text-lg">
-            {currentName ? "Editar proyecto" : "Nuevo proyecto"}
+            {cfg.name || (currentName ? "Editar proyecto" : "Nuevo proyecto")}
             {dirty && (
               <span className="ml-2 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-700">
                 sin guardar
@@ -1216,17 +1354,65 @@ export function DesignEditor({
           <button
             onClick={onSave}
             className="text-sm font-semibold px-4 py-1.5 rounded"
-            style={{
-              background: "var(--accent)",
-              color: "var(--accent-ink)",
-            }}
+            style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
           >
             Guardar
           </button>
         </div>
       </header>
+      )}
 
-      {/* Canvas (lienzo arriba de todo) */}
+      {/* ── layout principal: sidebar + contenido ──────────────────────── */}
+      <div className="flex gap-0 flex-1">
+
+        {/* ── sidebar izquierdo — oculto en modo maximizado ──────────────── */}
+        {!canvasMaximized && (
+        <nav className="flex flex-col items-center gap-1 pt-2 pr-2 shrink-0">
+          {sideItems.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setActiveView(item.id)}
+              title={item.label}
+              className={`w-10 h-10 flex items-center justify-center rounded-lg transition-colors relative group ${
+                activeView === item.id
+                  ? "bg-accent-token text-accent-ink"
+                  : "text-app hover:bg-surface-strong"
+              }`}
+              style={
+                activeView === item.id
+                  ? { background: "var(--accent)", color: "var(--accent-ink)" }
+                  : undefined
+              }
+            >
+              <item.Icon size={20} strokeWidth={2} />
+              <span className="pointer-events-none absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap text-xs font-medium px-2.5 py-1 rounded bg-slate-900 text-slate-50 border border-slate-700 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                {item.label}
+              </span>
+            </button>
+          ))}
+          {/* separador */}
+          <div className="w-6 border-t border-surface my-1" />
+          {/* botón volver al lienzo desde la vista de paso */}
+          {activeView === "step" && (
+            <button
+              onClick={() => setActiveView("canvas")}
+              title="Volver al lienzo"
+              className="w-10 h-10 flex items-center justify-center rounded-lg text-app hover:bg-surface-strong relative group"
+            >
+              <ArrowLeft size={20} strokeWidth={2} />
+              <span className="pointer-events-none absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap text-xs font-medium px-2.5 py-1 rounded bg-slate-900 text-slate-50 border border-slate-700 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                Volver al lienzo
+              </span>
+            </button>
+          )}
+        </nav>
+        )}
+
+        {/* ── área principal ────────────────────────────────────────────── */}
+        <div className="flex-1 min-w-0 space-y-4">
+
+      {/* ════════════════════ VISTA: LIENZO ════════════════════ */}
+      {activeView === "canvas" && (<>
       <div className="bg-panel border border-surface rounded-xl p-3">
         <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
           <h4 className="text-xs uppercase tracking-wider text-muted">
@@ -1234,14 +1420,28 @@ export function DesignEditor({
           </h4>
           <div className="flex gap-2 text-xs text-dim items-center flex-wrap">
             <span>
-              Click derecho: crear · Ctrl/Shift+click: multi · Drag puerto:
-              conectar
+              Click derecho: crear · Doble-click: editar · Drag puerto: conectar
             </span>
             <button
               onClick={() => setShowAI(true)}
               className="text-xs px-3 py-1 rounded border border-emerald-700 bg-emerald-500/20 text-emerald-300 ml-2"
             >
               ✨ Milhouse-AI
+            </button>
+            <button
+              onClick={() => setCanvasMaximized((v) => !v)}
+              className="ml-1 w-7 h-7 flex items-center justify-center rounded border border-surface-strong bg-surface-2 hover:bg-surface text-app"
+              title={
+                canvasMaximized
+                  ? "Restaurar tamaño (Esc)"
+                  : "Maximizar lienzo"
+              }
+            >
+              {canvasMaximized ? (
+                <Minimize2 size={14} strokeWidth={2} />
+              ) : (
+                <Maximize2 size={14} strokeWidth={2} />
+              )}
             </button>
           </div>
         </div>
@@ -1385,6 +1585,11 @@ export function DesignEditor({
             preloadInfo.has_preload ? preloadInfo.preloaded_step_ids : []
           }
           onOpenTable={onOpenTable}
+          onDoubleClickStep={(stepId) => {
+            const idx = cfg.steps.findIndex((s) => s.id === stepId);
+            if (idx >= 0) setSelectedIdx(idx);
+            setActiveView("step");
+          }}
           onCancelJob={
             activeJobId
               ? async () => {
@@ -1401,10 +1606,7 @@ export function DesignEditor({
         />
       </div>
 
-      {/* Cola de ejecución en vivo: visible mientras hay job activo. */}
-      {/* Cola de ejecución: visible mientras hay job activo Y también
-          después de que terminó (para inspeccionar resultados). Se cierra
-          a mano con "Limpiar y cerrar". */}
+      {/* Cola de ejecución */}
       {(() => {
         const queueJobId = activeJobId ?? lastJobId;
         const hasAnyState = Object.keys(stepStates).length > 0;
@@ -1460,92 +1662,152 @@ export function DesignEditor({
         );
       })()}
 
-      {/* Panel de ejecución del step seleccionado (logs + sample) */}
-      {selectedIdx != null &&
-        cfg.steps[selectedIdx] &&
-        (stepLogs[cfg.steps[selectedIdx].id]?.length ||
-          stepSamples[cfg.steps[selectedIdx].id]) && (
-          <div className="bg-panel border border-surface rounded-xl p-3">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-xs uppercase tracking-wider text-muted">
-                Ejecución · {cfg.steps[selectedIdx].id}
-              </h4>
-              <div className="flex gap-1 text-xs">
-                <button
-                  onClick={() => setExecTab("logs")}
-                  className={`px-2 py-0.5 rounded ${
-                    execTab === "logs"
-                      ? "bg-surface-strong"
-                      : "border border-surface-strong bg-surface"
-                  }`}
-                >
-                  Logs ({stepLogs[cfg.steps[selectedIdx].id]?.length ?? 0})
-                </button>
-                <button
-                  onClick={() => setExecTab("sample")}
-                  className={`px-2 py-0.5 rounded ${
-                    execTab === "sample"
-                      ? "bg-surface-strong"
-                      : "border border-surface-strong bg-surface"
-                  }`}
-                >
-                  Datos de salida
-                  {stepSamples[cfg.steps[selectedIdx].id]
-                    ? ` (${stepSamples[cfg.steps[selectedIdx].id].sampled_rows.toLocaleString()} filas)`
-                    : ""}
-                </button>
+      </>)} {/* fin activeView === "canvas" */}
+
+      {/* ════════════════════ VISTA: PASO (editor de step) ════════════════════ */}
+      {activeView === "step" && (() => {
+        if (selectedIdx == null || !cfg.steps[selectedIdx]) {
+          return (
+            <div className="bg-panel border border-surface rounded-xl p-6 text-center text-muted text-sm">
+              Hacé doble-click sobre un paso en el lienzo para editarlo.
+              <br />
+              <button
+                onClick={() => setActiveView("canvas")}
+                className="mt-3 text-xs px-3 py-1 rounded border border-surface-strong bg-surface-2"
+              >
+                ← Volver al lienzo
+              </button>
+            </div>
+          );
+        }
+        const selStep = cfg.steps[selectedIdx];
+        const selLogs = stepLogs[selStep.id] ?? [];
+        const lastErrorLog = stepStates[selStep.id] === "failed"
+          ? [...selLogs].reverse().find((l) => l.level === "error")?.line ?? null
+          : null;
+        return (
+          <div className="space-y-3">
+            {/* Header de la vista paso */}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setActiveView("canvas")}
+                className="text-sm px-3 py-1 rounded border border-surface-strong bg-surface-2"
+              >
+                ← Lienzo
+              </button>
+              <div className="flex items-center gap-2">
+                <code className="text-xs px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-700">
+                  {selStep.kind}
+                </code>
+                <span className="font-mono font-semibold">{selStep.id}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded border ${
+                  stepStates[selStep.id] === "failed"
+                    ? "bg-red-500/20 text-red-300 border-red-700"
+                    : stepStates[selStep.id] === "done"
+                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-700"
+                    : stepStates[selStep.id] === "running"
+                    ? "bg-cyan-500/20 text-cyan-300 border-cyan-700"
+                    : "bg-surface text-dim border-surface-strong"
+                }`}>
+                  {stepStates[selStep.id] ?? "idle"}
+                </span>
               </div>
             </div>
-            {execTab === "logs" ? (
-              <LogsPanel logs={stepLogs[cfg.steps[selectedIdx].id] ?? []} />
-            ) : (
-              <SamplePanel
-                sample={stepSamples[cfg.steps[selectedIdx].id] ?? null}
+
+            {/* Editor */}
+            <div className="bg-panel border border-surface rounded-xl p-3">
+              <StepEditor
+                step={selStep}
+                allStepIds={stepIds}
+                allGroups={groupNames}
+                existingTablesMap={existingTablesMap}
+                lastError={lastErrorLog}
+                availableTables={cfg.steps
+                  .filter(
+                    (p) =>
+                      p.id !== selStep.id &&
+                      (p as { output_table?: string }).output_table,
+                  )
+                  .map((p) => ({
+                    step_id: p.id,
+                    output_table: (p as { output_table?: string }).output_table!,
+                  }))}
+                onChange={(next) => updateStep(selectedIdx, next)}
+                onDelete={() => { deleteStep(selectedIdx); setActiveView("canvas"); }}
               />
+            </div>
+
+            {/* Logs + datos de salida */}
+            {(selLogs.length > 0 || stepSamples[selStep.id]) && (
+              <div className="bg-panel border border-surface rounded-xl p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs uppercase tracking-wider text-muted">
+                    Ejecución · {selStep.id}
+                  </h4>
+                  <div className="flex gap-1 text-xs">
+                    <button
+                      onClick={() => setExecTab("logs")}
+                      className={`px-2 py-0.5 rounded ${execTab === "logs" ? "bg-surface-strong" : "border border-surface-strong bg-surface"}`}
+                    >
+                      Logs ({selLogs.length})
+                    </button>
+                    <button
+                      onClick={() => setExecTab("sample")}
+                      className={`px-2 py-0.5 rounded ${execTab === "sample" ? "bg-surface-strong" : "border border-surface-strong bg-surface"}`}
+                    >
+                      Datos de salida{stepSamples[selStep.id] ? ` (${stepSamples[selStep.id].sampled_rows.toLocaleString()} filas)` : ""}
+                    </button>
+                  </div>
+                </div>
+                {execTab === "logs"
+                  ? <LogsPanel logs={selLogs} />
+                  : <SamplePanel sample={stepSamples[selStep.id] ?? null} />
+                }
+              </div>
             )}
           </div>
-        )}
+        );
+      })()}
 
-      {/* Editor del step seleccionado */}
-      {selectedIdx != null && cfg.steps[selectedIdx] && (
-        <div className="bg-panel border border-surface rounded-xl p-3">
-          <StepEditor
-            step={cfg.steps[selectedIdx]}
-            allStepIds={stepIds}
-            allGroups={groupNames}
-            availableTables={cfg.steps
-              .filter(
-                (p) =>
-                  p.id !== cfg.steps[selectedIdx!].id &&
-                  (p as { output_table?: string }).output_table,
-              )
-              .map((p) => ({
-                step_id: p.id,
-                output_table: (p as { output_table?: string }).output_table!,
-              }))}
-            onChange={(next) => updateStep(selectedIdx, next)}
-            onDelete={() => deleteStep(selectedIdx)}
-          />
-        </div>
-      )}
-
-      {/* Propiedades del proyecto (colapsable) */}
+      {/* ════════════════════ VISTA: CONFIG ════════════════════ */}
+      {activeView === "config" && (
       <div className="bg-panel border border-surface rounded-xl">
-        <button
-          onClick={() => setPropsOpen(!propsOpen)}
-          className="w-full flex items-center justify-between px-4 py-3 text-left"
-        >
+        <div className="px-4 py-3 border-b border-surface flex items-center justify-between flex-wrap gap-2">
           <div>
-            <h3 className="font-semibold">Propiedades del proyecto</h3>
+            <h3 className="font-semibold">Configuración del proyecto</h3>
             <p className="text-xs text-muted">
-              Nombre, versión, grupos, parámetros locales, respuestas
-              guardadas y exposición vía API.
+              {configTab === "general" && "Nombre, versión, paralelismo y grupos."}
+              {configTab === "api" && "Exposición como API REST."}
             </p>
           </div>
-          <span className="text-dim">{propsOpen ? "▾" : "▸"}</span>
-        </button>
-        {propsOpen && (
-          <div className="border-t border-surface p-3 space-y-3">
+          <nav className="flex gap-1 text-xs">
+            {([
+              { id: "general" as const, label: "General" },
+              { id: "api" as const, label: "API REST" },
+            ]).map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setConfigTab(t.id)}
+                className={`px-3 py-1.5 rounded font-medium ${
+                  configTab === t.id
+                    ? ""
+                    : "milhouse-btn-secondary border border-surface-strong"
+                }`}
+                style={
+                  configTab === t.id
+                    ? { background: "var(--accent)", color: "var(--accent-ink)" }
+                    : undefined
+                }
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* ── Tab: GENERAL ─────────────────────────────────────────────── */}
+        {configTab === "general" && (
+          <div className="p-3 space-y-3">
             <div className="grid grid-cols-[2fr_1fr] gap-3">
               <Field label="Nombre legible del proyecto">
                 <input
@@ -1566,10 +1828,9 @@ export function DesignEditor({
               </Field>
             </div>
 
-            {/* Parámetros de ejecución del proyecto */}
-            <div className="bg-panel border border-surface rounded-xl p-3">
+            <div className="bg-surface-2 border border-surface rounded-xl p-3">
               <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
-                Parámetros de ejecución
+                Ejecución
               </h4>
               <div className="grid grid-cols-[1fr_2fr] gap-3 items-end">
                 <Field label="Máx. pasos en paralelo">
@@ -1599,15 +1860,14 @@ export function DesignEditor({
               </div>
             </div>
 
-            {/* Grupos */}
-            <div className="bg-panel border border-surface rounded-xl p-3">
+            <div className="bg-surface-2 border border-surface rounded-xl p-3">
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-xs uppercase tracking-wider text-muted">
                   Grupos · {(cfg.groups ?? []).length}
                 </h4>
                 <button
                   onClick={addGroup}
-                  className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface-2"
+                  className="text-xs px-2 py-0.5 rounded border border-surface-strong bg-surface"
                 >
                   + Nuevo grupo
                 </button>
@@ -1668,177 +1928,14 @@ export function DesignEditor({
                 </div>
               )}
             </div>
+          </div>
+        )}
 
-            {/* Parámetros locales del proyecto + respuestas */}
-            <div>
-              <p className="text-[11px] text-dim mb-2">
-                Estos parámetros son <strong>locales</strong> al proyecto.
-                Para parámetros y respuestas globales (compartidos entre
-                proyectos) usá la sección "Parámetros de Ejecución". En
-                caso de colisión por nombre, el local pisa al global.
-              </p>
-              <ParametersPanel
-                parameters={cfg.parameters ?? []}
-                presets={cfg.presets ?? []}
-                onChange={(next) =>
-                  applyChange({
-                    ...cfg,
-                    parameters: next.parameters,
-                    presets: next.presets,
-                  })
-                }
-              />
+        {/* (Tab "Parámetros" movido al sidebar como vista propia — ver activeView === "parameters") */}
 
-              {/* Globales — requirement por proyecto */}
-              <div className="mt-4 bg-surface-2 border border-surface rounded p-3">
-                <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
-                  Parámetros globales — aplicación al proyecto
-                </h4>
-                <p className="text-[11px] text-dim mb-2">
-                  Por cada global, elegí cómo aplica:{" "}
-                  <strong>no aplica</strong> (no se mergea —{" "}
-                  <em>default</em>),
-                  <strong> opcional</strong> (se mergea, puede quedar sin
-                  responder) o <strong>obligatorio</strong> (si no hay
-                  valor al ejecutar, el job se rechaza).
-                </p>
-                {globalParams.parameters.length === 0 ? (
-                  <div className="text-xs text-dim">
-                    No hay parámetros globales declarados.{" "}
-                    <em>(Se definen en la sección "Parámetros de Ejecución".)</em>
-                  </div>
-                ) : (
-                  <div className="space-y-1">
-                    {globalParams.parameters.map((g) => {
-                      const selected = (
-                        cfg.selected_global_params ?? []
-                      ).includes(g.name);
-                      const req =
-                        (cfg.param_requirements ?? {})[g.name] ??
-                        "optional";
-                      const value: "none" | "optional" | "required" = !selected
-                        ? "none"
-                        : req;
-                      const localCollision = (cfg.parameters ?? []).some(
-                        (p) => p.name === g.name,
-                      );
-                      return (
-                        <div
-                          key={g.name}
-                          className="flex items-center gap-2 text-sm text-app"
-                          title={g.description ?? ""}
-                        >
-                          <select
-                            value={value}
-                            onChange={(e) => {
-                              const next = e.target.value as
-                                | "none"
-                                | "optional"
-                                | "required";
-                              const curSelected =
-                                cfg.selected_global_params ?? [];
-                              const curReq = {
-                                ...(cfg.param_requirements ?? {}),
-                              };
-                              if (next === "none") {
-                                applyChange({
-                                  ...cfg,
-                                  selected_global_params: curSelected.filter(
-                                    (n) => n !== g.name,
-                                  ),
-                                  param_requirements: Object.fromEntries(
-                                    Object.entries(curReq).filter(
-                                      ([k]) => k !== g.name,
-                                    ),
-                                  ),
-                                });
-                              } else {
-                                const newSelected = curSelected.includes(g.name)
-                                  ? curSelected
-                                  : [...curSelected, g.name];
-                                curReq[g.name] = next;
-                                applyChange({
-                                  ...cfg,
-                                  selected_global_params: newSelected,
-                                  param_requirements: curReq,
-                                });
-                              }
-                            }}
-                            className="milhouse-field text-xs py-0.5 w-32"
-                          >
-                            <option value="none">— no aplica</option>
-                            <option value="optional">opcional</option>
-                            <option value="required">★ obligatorio</option>
-                          </select>
-                          <code className="font-mono text-xs">{g.name}</code>
-                          <span className="text-[10px] text-dim">
-                            {g.kind}
-                          </span>
-                          {g.label && (
-                            <span className="text-[10px] text-dim truncate">
-                              — {g.label}
-                            </span>
-                          )}
-                          {localCollision && (
-                            <span
-                              className="text-[10px] px-1 rounded bg-amber-500/20 text-amber-300 border border-amber-700"
-                              title="Hay un parámetro local con el mismo nombre — el local pisa al global"
-                            >
-                              pisado por local
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Locales del proyecto: select de opcional/obligatorio */}
-              {(cfg.parameters ?? []).length > 0 && (
-                <div className="mt-3 bg-surface-2 border border-surface rounded p-3">
-                  <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
-                    Parámetros locales — obligatoriedad
-                  </h4>
-                  <div className="space-y-1">
-                    {(cfg.parameters ?? []).map((p) => {
-                      const req =
-                        (cfg.param_requirements ?? {})[p.name] ?? "optional";
-                      return (
-                        <div
-                          key={p.name}
-                          className="flex items-center gap-2 text-sm text-app"
-                        >
-                          <select
-                            value={req}
-                            onChange={(e) => {
-                              const next = e.target.value as
-                                | "optional"
-                                | "required";
-                              applyChange({
-                                ...cfg,
-                                param_requirements: {
-                                  ...(cfg.param_requirements ?? {}),
-                                  [p.name]: next,
-                                },
-                              });
-                            }}
-                            className="milhouse-field text-xs py-0.5 w-32"
-                          >
-                            <option value="optional">opcional</option>
-                            <option value="required">★ obligatorio</option>
-                          </select>
-                          <code className="font-mono text-xs">{p.name}</code>
-                          <span className="text-[10px] text-dim">{p.kind}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Exposición como API REST */}
+        {/* ── Tab: API REST ────────────────────────────────────────────── */}
+        {configTab === "api" && (
+          <div className="p-3">
             <ApiExposurePanel
               projectFilename={currentName}
               api={cfg.api ?? {}}
@@ -1848,31 +1945,427 @@ export function DesignEditor({
           </div>
         )}
       </div>
+      )} {/* fin activeView === "config" */}
 
-      {/* Respuestas del proyecto (defaults para el prompt de ejecución) */}
-      <RunDefaultsPanel
-        open={runDefaultsOpen}
-        onToggle={() => setRunDefaultsOpen(!runDefaultsOpen)}
-        localParams={cfg.parameters ?? []}
-        globalParams={globalParams.parameters}
-        selectedGlobals={cfg.selected_global_params ?? []}
-        paramRequirements={cfg.param_requirements ?? {}}
-        runDefaults={cfg.run_defaults ?? {}}
-        allPresets={[
-          ...(cfg.presets ?? []),
-          ...globalParams.presets.filter(
-            (g) => !(cfg.presets ?? []).some((l) => l.name === g.name),
-          ),
-        ]}
-        presetGroups={globalParams.preset_groups}
-        selectedPresetGroups={cfg.selected_preset_groups ?? []}
-        onChange={(next) =>
-          applyChange({ ...cfg, run_defaults: next })
-        }
-        onChangeSelectedGroups={(next) =>
-          applyChange({ ...cfg, selected_preset_groups: next })
-        }
-      />
+      {/* ════════════════════ VISTA: PARÁMETROS ════════════════════ */}
+      {activeView === "parameters" && (
+        <div className="bg-panel border border-surface rounded-xl">
+          <div className="px-4 py-3 border-b border-surface">
+            <h3 className="font-semibold">Parámetros</h3>
+            <p className="text-xs text-muted">
+              Parámetros locales del proyecto + cómo aplican los globales.
+            </p>
+          </div>
+          <div className="p-3 space-y-3">
+            <ParametersPanel
+              parameters={cfg.parameters ?? []}
+              presets={cfg.presets ?? []}
+              onChange={(next) =>
+                applyChange({
+                  ...cfg,
+                  parameters: next.parameters,
+                  presets: next.presets,
+                })
+              }
+            />
+
+            {/* Globales — requirement por proyecto */}
+            <div className="bg-surface-2 border border-surface rounded p-3">
+              <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                <h4 className="text-xs uppercase tracking-wider text-muted">
+                  Parámetros globales — aplicación al proyecto
+                </h4>
+                {globalParams.parameters.length > 0 && (() => {
+                  const counts = { required: 0, optional: 0, none: 0 };
+                  for (const g of globalParams.parameters) {
+                    const sel = (cfg.selected_global_params ?? []).includes(g.name);
+                    if (!sel) {
+                      counts.none++;
+                    } else {
+                      const req =
+                        (cfg.param_requirements ?? {})[g.name] ?? "optional";
+                      if (req === "required") counts.required++;
+                      else counts.optional++;
+                    }
+                  }
+                  const Toggle = ({
+                    keyName,
+                    label,
+                    count,
+                    activeClass,
+                  }: {
+                    keyName: "required" | "optional" | "none";
+                    label: string;
+                    count: number;
+                    activeClass: string;
+                  }) => {
+                    const on = globalFilter[keyName];
+                    return (
+                      <button
+                        onClick={() =>
+                          setGlobalFilter((p) => ({ ...p, [keyName]: !p[keyName] }))
+                        }
+                        className={`text-[11px] px-2 py-0.5 rounded border ${
+                          on
+                            ? activeClass
+                            : "milhouse-btn-secondary border-surface-strong opacity-60"
+                        }`}
+                        title={on ? "Ocultar" : "Mostrar"}
+                      >
+                        {on ? "✓ " : ""}
+                        {label}
+                        <span className="ml-1 opacity-75">({count})</span>
+                      </button>
+                    );
+                  };
+                  return (
+                    <div className="flex gap-1 flex-wrap">
+                      <Toggle
+                        keyName="required"
+                        label="★ Obligatorios"
+                        count={counts.required}
+                        activeClass="bg-amber-300 text-amber-950 border-amber-500 font-semibold"
+                      />
+                      <Toggle
+                        keyName="optional"
+                        label="○ Opcionales"
+                        count={counts.optional}
+                        activeClass="bg-cyan-300 text-cyan-950 border-cyan-500 font-semibold"
+                      />
+                      <Toggle
+                        keyName="none"
+                        label="— No aplica"
+                        count={counts.none}
+                        activeClass="bg-slate-300 text-slate-950 border-slate-500 font-semibold"
+                      />
+                    </div>
+                  );
+                })()}
+              </div>
+              <p className="text-[11px] text-dim mb-2">
+                Por cada global, elegí cómo aplica:{" "}
+                <strong>no aplica</strong> (no se mergea —{" "}
+                <em>default</em>),
+                <strong> opcional</strong> (se mergea, puede quedar sin
+                responder) o <strong>obligatorio</strong> (si no hay
+                valor al ejecutar, el job se rechaza). Si querés sobreescribir
+                la respuesta global por defecto solo para este proyecto, definí
+                una "respuesta por defecto a nivel proyecto".
+              </p>
+              {globalParams.parameters.length === 0 ? (
+                <div className="text-xs text-dim">
+                  No hay parámetros globales declarados.{" "}
+                  <em>(Se definen en la sección "Parámetros" del menú principal.)</em>
+                </div>
+              ) : (() => {
+                const rows = globalParams.parameters
+                  .map((g) => {
+                    const selected = (
+                      cfg.selected_global_params ?? []
+                    ).includes(g.name);
+                    const req =
+                      (cfg.param_requirements ?? {})[g.name] ??
+                      "optional";
+                    const status: "required" | "optional" | "none" = !selected
+                      ? "none"
+                      : req;
+                    return { g, selected, req, status };
+                  })
+                  .filter((r) => globalFilter[r.status]);
+                if (rows.length === 0) {
+                  return (
+                    <div className="text-xs text-dim">
+                      No hay globales que coincidan con el filtro actual.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-2">
+                    {rows.map(({ g, selected, status }) => {
+                      const localCollision = (cfg.parameters ?? []).some(
+                        (p) => p.name === g.name,
+                      );
+                      const projectDefault = (cfg.run_defaults ?? {})[g.name];
+                      const hasProjectDefault =
+                        projectDefault != null &&
+                        !(Array.isArray(projectDefault) && projectDefault.length === 0) &&
+                        !(typeof projectDefault === "string" && projectDefault === "");
+                      return (
+                        <div
+                          key={g.name}
+                          className={`border rounded p-2 ${
+                            status === "required"
+                              ? "border-amber-700 bg-amber-500/5"
+                              : status === "optional"
+                              ? "border-surface bg-surface"
+                              : "border-surface bg-surface/50 opacity-80"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <select
+                              value={status}
+                              onChange={(e) => {
+                                const next = e.target.value as
+                                  | "none"
+                                  | "optional"
+                                  | "required";
+                                const curSelected =
+                                  cfg.selected_global_params ?? [];
+                                const curReq = {
+                                  ...(cfg.param_requirements ?? {}),
+                                };
+                                if (next === "none") {
+                                  applyChange({
+                                    ...cfg,
+                                    selected_global_params: curSelected.filter(
+                                      (n) => n !== g.name,
+                                    ),
+                                    param_requirements: Object.fromEntries(
+                                      Object.entries(curReq).filter(
+                                        ([k]) => k !== g.name,
+                                      ),
+                                    ),
+                                  });
+                                } else {
+                                  const newSelected = curSelected.includes(g.name)
+                                    ? curSelected
+                                    : [...curSelected, g.name];
+                                  curReq[g.name] = next;
+                                  applyChange({
+                                    ...cfg,
+                                    selected_global_params: newSelected,
+                                    param_requirements: curReq,
+                                  });
+                                }
+                              }}
+                              className="milhouse-field text-xs py-0.5 w-32"
+                            >
+                              <option value="none">— no aplica</option>
+                              <option value="optional">opcional</option>
+                              <option value="required">★ obligatorio</option>
+                            </select>
+                            <code className="font-mono text-xs font-semibold">
+                              :{g.name}
+                            </code>
+                            <span className="text-[10px] text-dim">
+                              {g.kind}
+                            </span>
+                            {g.label && (
+                              <span className="text-[10px] text-dim truncate">
+                                — {g.label}
+                              </span>
+                            )}
+                            {localCollision && (
+                              <span
+                                className="text-[10px] px-1 rounded bg-amber-500/20 text-amber-300 border border-amber-700"
+                                title="Hay un parámetro local con el mismo nombre — el local pisa al global"
+                              >
+                                pisado por local
+                              </span>
+                            )}
+                          </div>
+                          {selected && (
+                            <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <div>
+                                <div className="text-[10px] uppercase tracking-wider text-dim mb-0.5">
+                                  Respuesta global por defecto
+                                </div>
+                                <div className="text-xs font-mono px-2 py-1 rounded bg-surface-2 border border-surface min-h-[28px] flex items-center">
+                                  {formatParamDefault(g.default, g.kind) ?? (
+                                    <span className="text-dim italic">
+                                      (sin default global)
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-[10px] uppercase tracking-wider text-dim mb-0.5 flex items-center justify-between">
+                                  <span>
+                                    Respuesta por defecto del proyecto
+                                    {hasProjectDefault && (
+                                      <span className="ml-1 text-cyan-300">✎</span>
+                                    )}
+                                  </span>
+                                  {hasProjectDefault && (
+                                    <button
+                                      onClick={() => {
+                                        const next = {
+                                          ...(cfg.run_defaults ?? {}),
+                                        };
+                                        delete next[g.name];
+                                        applyChange({
+                                          ...cfg,
+                                          run_defaults: next,
+                                        });
+                                      }}
+                                      className="text-[10px] text-cyan-300 underline normal-case"
+                                      title="Quitar el default del proyecto y usar el global"
+                                    >
+                                      ↶ usar global
+                                    </button>
+                                  )}
+                                </div>
+                                <RunDefaultEditor
+                                  param={g}
+                                  value={projectDefault}
+                                  onChange={(v) => {
+                                    const next = {
+                                      ...(cfg.run_defaults ?? {}),
+                                    };
+                                    if (v == null) delete next[g.name];
+                                    else next[g.name] = v;
+                                    applyChange({
+                                      ...cfg,
+                                      run_defaults: next,
+                                    });
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Locales del proyecto: select de opcional/obligatorio */}
+            {(cfg.parameters ?? []).length > 0 && (
+              <div className="bg-surface-2 border border-surface rounded p-3">
+                <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+                  Parámetros locales — obligatoriedad
+                </h4>
+                <div className="space-y-1">
+                  {(cfg.parameters ?? []).map((p) => {
+                    const req =
+                      (cfg.param_requirements ?? {})[p.name] ?? "optional";
+                    return (
+                      <div
+                        key={p.name}
+                        className="flex items-center gap-2 text-sm text-app"
+                      >
+                        <select
+                          value={req}
+                          onChange={(e) => {
+                            const next = e.target.value as
+                              | "optional"
+                              | "required";
+                            applyChange({
+                              ...cfg,
+                              param_requirements: {
+                                ...(cfg.param_requirements ?? {}),
+                                [p.name]: next,
+                              },
+                            });
+                          }}
+                          className="milhouse-field text-xs py-0.5 w-32"
+                        >
+                          <option value="optional">opcional</option>
+                          <option value="required">★ obligatorio</option>
+                        </select>
+                        <code className="font-mono text-xs">{p.name}</code>
+                        <span className="text-[10px] text-dim">{p.kind}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )} {/* fin activeView === "parameters" */}
+
+      {/* ════════════════════ VISTA: RESPUESTAS ════════════════════ */}
+      {activeView === "answers" && (
+        <div className="bg-panel border border-surface rounded-xl">
+          <div className="px-4 py-3 border-b border-surface flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 className="font-semibold">Respuestas</h3>
+              <p className="text-xs text-muted">
+                {answersTab === "answers" &&
+                  "Grupos de respuestas globales que aplican siempre al ejecutar. Se aplican en orden — el último gana."}
+                {answersTab === "values" &&
+                  "Valores que solo aplican a la próxima ejecución desde esta sesión. No se guardan."}
+              </p>
+            </div>
+            <nav className="flex gap-1 text-xs">
+              {([
+                { id: "answers" as const, label: "Respuestas" },
+                { id: "values" as const, label: "Valores de ejecución" },
+              ]).map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setAnswersTab(t.id)}
+                  className={`px-3 py-1.5 rounded font-medium ${
+                    answersTab === t.id
+                      ? ""
+                      : "milhouse-btn-secondary border border-surface-strong"
+                  }`}
+                  style={
+                    answersTab === t.id
+                      ? { background: "var(--accent)", color: "var(--accent-ink)" }
+                      : undefined
+                  }
+                >
+                  {t.label}
+                </button>
+              ))}
+            </nav>
+          </div>
+
+          {answersTab === "answers" && (
+            <div className="p-3">
+              <ProjectAnswersPanel
+                presetGroups={globalParams.preset_groups}
+                allPresets={[
+                  ...(cfg.presets ?? []),
+                  ...globalParams.presets.filter(
+                    (g) => !(cfg.presets ?? []).some((l) => l.name === g.name),
+                  ),
+                ]}
+                selectedPresetGroups={cfg.selected_preset_groups ?? []}
+                selectedPresets={cfg.selected_presets ?? []}
+                onChangeGroups={(next) =>
+                  applyChange({ ...cfg, selected_preset_groups: next })
+                }
+                onChangePresets={(next) =>
+                  applyChange({ ...cfg, selected_presets: next })
+                }
+              />
+            </div>
+          )}
+
+          {answersTab === "values" && (
+            <div className="p-3">
+              <SessionValuesPanel
+                localParams={cfg.parameters ?? []}
+                globalParams={globalParams.parameters}
+                selectedGlobals={cfg.selected_global_params ?? []}
+                paramRequirements={cfg.param_requirements ?? {}}
+                runDefaults={cfg.run_defaults ?? {}}
+                selectedPresetGroups={cfg.selected_preset_groups ?? []}
+                selectedPresets={cfg.selected_presets ?? []}
+                allPresets={[
+                  ...(cfg.presets ?? []),
+                  ...globalParams.presets.filter(
+                    (g) => !(cfg.presets ?? []).some((l) => l.name === g.name),
+                  ),
+                ]}
+                presetGroups={globalParams.preset_groups}
+                values={sessionParamValues}
+                onChange={setSessionParamValues}
+              />
+            </div>
+          )}
+        </div>
+      )} {/* fin activeView === "answers" */}
+
+        </div> {/* fin área principal */}
+      </div> {/* fin layout sidebar+contenido */}
+
+      {/* ── modales globales (siempre montados independiente de la vista) ── */}
 
       {paramPrompt && (
         <ParameterPromptDialog
@@ -1880,7 +2373,10 @@ export function DesignEditor({
           presets={mergedPresetsForPrompt(cfg.presets ?? [], globalParams.presets)}
           presetGroups={globalParams.preset_groups}
           defaultRunName={paramPrompt.defaultRunName}
-          initialValues={cfg.run_defaults ?? {}}
+          initialValues={sessionParamValues}
+          paramRequirements={cfg.param_requirements ?? {}}
+          runDefaults={cfg.run_defaults ?? {}}
+          selectedPresetGroupsActive={cfg.selected_preset_groups ?? []}
           onCancel={() => setParamPrompt(null)}
           onResolved={async (args) => {
             const cb = paramPrompt.onResolved;
@@ -2173,6 +2669,7 @@ function createsCycle(steps: Step[], from: string, to: string): boolean {
 function RunDefaultsPanel({
   open,
   onToggle,
+  hideHeader = false,
   localParams,
   globalParams,
   selectedGlobals,
@@ -2186,6 +2683,7 @@ function RunDefaultsPanel({
 }: {
   open: boolean;
   onToggle: () => void;
+  hideHeader?: boolean;
   localParams: ParamSpec[];
   globalParams: ParamSpec[];
   selectedGlobals: string[];
@@ -2266,25 +2764,34 @@ function RunDefaultsPanel({
 
   return (
     <div className="bg-panel border border-surface rounded-xl">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between px-4 py-3 text-left"
-      >
-        <div>
-          <h3 className="font-semibold">Propiedades de ejecución</h3>
+      {!hideHeader && (
+        <button
+          onClick={onToggle}
+          className="w-full flex items-center justify-between px-4 py-3 text-left"
+        >
+          <div>
+            <h3 className="font-semibold">Propiedades de ejecución</h3>
+            <p className="text-xs text-muted">
+              Respuestas por default a los parámetros del proyecto.{" "}
+              {available.length > 0 && (
+                <strong>{answered} / {available.length} respondidos</strong>
+              )}
+            </p>
+          </div>
+          <span className="text-dim">{open ? "▾" : "▸"}</span>
+        </button>
+      )}
+      {hideHeader && (
+        <div className="px-4 py-3 border-b border-surface">
+          <h3 className="font-semibold">Ejecución del proyecto</h3>
           <p className="text-xs text-muted">
-            Respuestas por default a los parámetros del proyecto (locales y
-            globales seleccionados). Pre-rellenan el prompt al ejecutar; el
-            usuario puede confirmarlas o cambiarlas.{" "}
+            Respuestas por default a los parámetros (locales y globales seleccionados). Pre-rellenan el prompt al ejecutar.{" "}
             {available.length > 0 && (
-              <strong>
-                {answered} / {available.length} respondidos
-              </strong>
+              <strong>{answered} / {available.length} respondidos</strong>
             )}
           </p>
         </div>
-        <span className="text-dim">{open ? "▾" : "▸"}</span>
-      </button>
+      )}
       {open && (
         <div className="border-t border-surface p-3 space-y-3">
           {/* Grupos de respuestas que aplican siempre */}
@@ -2368,6 +2875,8 @@ function RunDefaultsPanel({
                           const v = fromGroups[p.name];
                           const display = Array.isArray(v.value)
                             ? `[${v.value.length} valor${v.value.length === 1 ? "" : "es"}]`
+                            : p.kind === "date"
+                            ? formatDateValue(v.value)
                             : v.value;
                           const isReq =
                             paramRequirements[p.name] === "required";
@@ -2493,6 +3002,25 @@ function RunDefaultsPanel({
   );
 }
 
+/** Renderiza el valor de un parámetro como texto legible para preview.
+ *  Devuelve null si está vacío (para que el caller pueda mostrar un placeholder).
+ *  Si se pasa el `kind`, se aplica formato específico — en particular para
+ *  `date`: ISO se muestra como DD-MM-YYYY y las expresiones dinámicas se
+ *  muestran como "today - 20d (DD-MM-YYYY)". */
+function formatParamDefault(
+  v: ParamValueJson | null | undefined,
+  kind?: ParamKind,
+): string | null {
+  if (v == null) return null;
+  if (Array.isArray(v)) {
+    if (v.length === 0) return null;
+    return v.join(", ");
+  }
+  if (v === "") return null;
+  if (kind === "date") return formatDateValue(v);
+  return v;
+}
+
 function RunDefaultEditor({
   param,
   value,
@@ -2582,4 +3110,645 @@ function RunDefaultEditor({
     );
   }
   return null;
+}
+
+type PresetGroupLite = {
+  name: string;
+  description?: string | null;
+  preset_names: string[];
+};
+
+/**
+ * Panel "Respuestas del proyecto": grupos de respuestas globales que aplican
+ * al ejecutar este proyecto. Drag&drop para definir el orden de prioridad
+ * (último gana en colisión).
+ */
+type AnswerItem =
+  | { kind: "group"; group: PresetGroupLite }
+  | { kind: "preset"; preset: ParamPreset };
+
+const GROUP_ICON = "📦";
+const PRESET_ICON = "🏷";
+
+function ProjectAnswersPanel({
+  presetGroups,
+  allPresets,
+  selectedPresetGroups,
+  selectedPresets,
+  onChangeGroups,
+  onChangePresets,
+}: {
+  presetGroups: PresetGroupLite[];
+  allPresets: ParamPreset[];
+  selectedPresetGroups: string[];
+  selectedPresets: string[];
+  onChangeGroups: (next: string[]) => void;
+  onChangePresets: (next: string[]) => void;
+}) {
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  const groupByName = new Map(presetGroups.map((g) => [g.name, g]));
+  const presetByName = new Map(allPresets.map((p) => [p.name, p]));
+
+  // Lista ordenada y mixta de items activos. Persistimos dos arrays
+  // separados en el JSON, pero la UI los muestra como una sola lista
+  // ordenable. El orden lógico es: primero los grupos en su orden, luego
+  // los presets sueltos en su orden — el backend aplica los grupos
+  // primero y después los presets, así que el último del array efectivo
+  // gana.
+  const orderedItems: AnswerItem[] = [
+    ...selectedPresetGroups
+      .map((n) => groupByName.get(n))
+      .filter((g): g is PresetGroupLite => !!g)
+      .map((g): AnswerItem => ({ kind: "group", group: g })),
+    ...selectedPresets
+      .map((n) => presetByName.get(n))
+      .filter((p): p is ParamPreset => !!p)
+      .map((p): AnswerItem => ({ kind: "preset", preset: p })),
+  ];
+
+  const availableGroups = presetGroups.filter(
+    (g) => !selectedPresetGroups.includes(g.name),
+  );
+  const availablePresets = allPresets.filter(
+    (p) => !selectedPresets.includes(p.name),
+  );
+
+  /** Reordena el array efectivo aplicando los cambios al array
+   *  correspondiente (groups o presets). Si el item se movió a una
+   *  posición dentro de la sección del otro tipo, no se cruza — los
+   *  arrays se mantienen separados, pero el orden visual dentro de cada
+   *  sección sí se respeta. */
+  function move(from: number, to: number) {
+    if (from === to) return;
+    const item = orderedItems[from];
+    if (!item) return;
+    if (item.kind === "group") {
+      // Reordenar solo dentro de los grupos. `to` se clampa al rango de
+      // grupos.
+      const groupCount = selectedPresetGroups.length;
+      const targetIdx = Math.min(to, groupCount - 1);
+      const next = [...selectedPresetGroups];
+      const [name] = next.splice(from, 1);
+      next.splice(targetIdx, 0, name);
+      onChangeGroups(next);
+    } else {
+      const groupCount = selectedPresetGroups.length;
+      const presetFromIdx = from - groupCount;
+      const presetToIdx = Math.max(0, to - groupCount);
+      const next = [...selectedPresets];
+      const [name] = next.splice(presetFromIdx, 1);
+      next.splice(presetToIdx, 0, name);
+      onChangePresets(next);
+    }
+  }
+
+  function removeGroup(name: string) {
+    onChangeGroups(selectedPresetGroups.filter((n) => n !== name));
+  }
+
+  function removePreset(name: string) {
+    onChangePresets(selectedPresets.filter((n) => n !== name));
+  }
+
+  function addGroup(name: string) {
+    if (selectedPresetGroups.includes(name)) return;
+    onChangeGroups([...selectedPresetGroups, name]);
+  }
+
+  function addPreset(name: string) {
+    if (selectedPresets.includes(name)) return;
+    onChangePresets([...selectedPresets, name]);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-surface-2 border border-surface rounded p-3">
+        <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+          Respuestas activas · {orderedItems.length}
+        </h4>
+        <p className="text-[11px] text-dim mb-2">
+          Arrastrá los items para reordenar. Las respuestas se aplican de
+          arriba hacia abajo — la última en la lista pisa a las anteriores
+          si hay colisión por nombre. {GROUP_ICON} = grupo, {PRESET_ICON}{" "}
+          = respuesta individual.
+        </p>
+        {orderedItems.length === 0 ? (
+          <div className="text-xs text-dim italic">
+            No hay respuestas activas. Agregá grupos o respuestas desde
+            las listas de abajo.
+          </div>
+        ) : (
+          <ul className="space-y-1">
+            {orderedItems.map((it, i) => {
+              const isDragging = dragIndex === i;
+              const isDropTarget = hoverIndex === i && dragIndex !== i;
+              const key =
+                it.kind === "group"
+                  ? `g:${it.group.name}`
+                  : `p:${it.preset.name}`;
+              return (
+                <li
+                  key={key}
+                  draggable
+                  onDragStart={(e) => {
+                    setDragIndex(i);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setHoverIndex(i);
+                  }}
+                  onDragLeave={() => {
+                    if (hoverIndex === i) setHoverIndex(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragIndex != null) move(dragIndex, i);
+                    setDragIndex(null);
+                    setHoverIndex(null);
+                  }}
+                  onDragEnd={() => {
+                    setDragIndex(null);
+                    setHoverIndex(null);
+                  }}
+                  className={`flex items-center gap-2 px-2 py-1.5 rounded border bg-surface text-sm cursor-move transition-colors ${
+                    isDragging
+                      ? "opacity-50 border-cyan-600"
+                      : isDropTarget
+                      ? "border-cyan-500 bg-cyan-500/10"
+                      : "border-surface-strong"
+                  }`}
+                >
+                  <span className="text-dim font-mono text-[11px] w-5 text-right">
+                    {i + 1}
+                  </span>
+                  <span className="text-dim cursor-grab select-none">⋮⋮</span>
+                  {it.kind === "group" ? (
+                    <>
+                      <code className="font-mono text-xs font-semibold">
+                        {GROUP_ICON} {it.group.name}
+                      </code>
+                      <span className="text-[10px] text-dim">
+                        ({it.group.preset_names.length} preset
+                        {it.group.preset_names.length === 1 ? "" : "s"})
+                      </span>
+                      {it.group.description && (
+                        <span className="text-[10px] text-dim truncate">
+                          — {it.group.description}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => removeGroup(it.group.name)}
+                        className="ml-auto text-[11px] text-red-300 hover:underline"
+                        title="Quitar grupo"
+                      >
+                        ✕
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <code className="font-mono text-xs font-semibold">
+                        {PRESET_ICON} {it.preset.name}
+                      </code>
+                      <span className="text-[10px] text-dim">
+                        ({Object.keys(it.preset.values).length} valor
+                        {Object.keys(it.preset.values).length === 1 ? "" : "es"})
+                      </span>
+                      {it.preset.description && (
+                        <span className="text-[10px] text-dim truncate">
+                          — {it.preset.description}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => removePreset(it.preset.name)}
+                        className="ml-auto text-[11px] text-red-300 hover:underline"
+                        title="Quitar respuesta"
+                      >
+                        ✕
+                      </button>
+                    </>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {orderedItems.length > 0 && (
+          <details className="mt-2 text-[11px] text-dim">
+            <summary className="cursor-pointer">
+              Ver valores resueltos
+            </summary>
+            <div className="mt-1 font-mono">
+              {(() => {
+                const resolved: Record<
+                  string,
+                  { value: ParamValueJson; via: string }
+                > = {};
+                // Mismo orden que el backend: primero grupos, luego presets.
+                for (const it of orderedItems) {
+                  if (it.kind === "group") {
+                    for (const pn of it.group.preset_names) {
+                      const pr = presetByName.get(pn);
+                      if (!pr) continue;
+                      for (const [k, v] of Object.entries(pr.values)) {
+                        resolved[k] = { value: v, via: `${it.group.name} → ${pn}` };
+                      }
+                    }
+                  } else {
+                    for (const [k, v] of Object.entries(it.preset.values)) {
+                      resolved[k] = { value: v, via: it.preset.name };
+                    }
+                  }
+                }
+                const keys = Object.keys(resolved);
+                if (keys.length === 0) {
+                  return <span className="italic">(ningún valor resuelto)</span>;
+                }
+                return (
+                  <ul className="space-y-0.5">
+                    {keys.map((k) => {
+                      const v = resolved[k];
+                      const display = Array.isArray(v.value)
+                        ? `[${v.value.length} valor${v.value.length === 1 ? "" : "es"}]`
+                        : formatMaybeDate(v.value);
+                      return (
+                        <li key={k}>
+                          <span className="text-cyan-300">:{k}</span> = {display}{" "}
+                          <span className="opacity-60">({v.via})</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                );
+              })()}
+            </div>
+          </details>
+        )}
+      </div>
+
+      <div className="bg-surface-2 border border-surface rounded p-3">
+        <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+          {GROUP_ICON} Grupos disponibles · {availableGroups.length}
+        </h4>
+        {presetGroups.length === 0 ? (
+          <p className="text-xs text-dim">
+            No hay grupos de respuestas definidos globalmente. Creá uno
+            desde la sección "Parámetros" del menú principal.
+          </p>
+        ) : availableGroups.length === 0 ? (
+          <p className="text-xs text-dim italic">
+            Todos los grupos están en uso.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {availableGroups.map((g) => (
+              <button
+                key={g.name}
+                onClick={() => addGroup(g.name)}
+                className="text-xs px-2 py-1 rounded border milhouse-btn-secondary border-surface-strong"
+                title={
+                  (g.description ? g.description + " · " : "") +
+                  `Aplica: ${g.preset_names.join(", ")}`
+                }
+              >
+                + {GROUP_ICON} {g.name}
+                <span className="text-[10px] opacity-75 ml-1">
+                  ({g.preset_names.length})
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-surface-2 border border-surface rounded p-3">
+        <h4 className="text-xs uppercase tracking-wider text-muted mb-2">
+          {PRESET_ICON} Respuestas disponibles · {availablePresets.length}
+        </h4>
+        {allPresets.length === 0 ? (
+          <p className="text-xs text-dim">
+            No hay respuestas guardadas. Creá una desde la sección
+            "Parámetros" del menú principal o desde Parámetros del
+            proyecto.
+          </p>
+        ) : availablePresets.length === 0 ? (
+          <p className="text-xs text-dim italic">
+            Todas las respuestas guardadas están en uso.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {availablePresets.map((p) => (
+              <button
+                key={p.name}
+                onClick={() => addPreset(p.name)}
+                className="text-xs px-2 py-1 rounded border milhouse-btn-secondary border-surface-strong"
+                title={
+                  (p.description ? p.description + " · " : "") +
+                  `${Object.keys(p.values).length} valor(es)`
+                }
+              >
+                + {PRESET_ICON} {p.name}
+                <span className="text-[10px] opacity-75 ml-1">
+                  ({Object.keys(p.values).length})
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Panel "Valores de ejecución": valores ad-hoc que solo aplican a la
+ * próxima ejecución desde esta sesión. NO se persisten en el JSON.
+ */
+/** Origen del valor efectivo de un parámetro en runtime.
+ *  Mismo orden que el backend: override sesión > run_default proyecto
+ *  > preset suelto (en orden) > preset de grupo (en orden) > param.default. */
+type SessionValueOrigin =
+  | { source: "session_override" }
+  | { source: "run_default" }
+  | { source: "selected_preset"; presetName: string }
+  | { source: "group_preset"; groupName: string; presetName: string }
+  | { source: "param_default" }
+  | { source: "none" };
+
+function SessionValuesPanel({
+  localParams,
+  globalParams,
+  selectedGlobals,
+  paramRequirements,
+  runDefaults,
+  selectedPresetGroups,
+  selectedPresets,
+  allPresets,
+  presetGroups,
+  values,
+  onChange,
+}: {
+  localParams: ParamSpec[];
+  globalParams: ParamSpec[];
+  selectedGlobals: string[];
+  paramRequirements: Record<string, "optional" | "required">;
+  runDefaults: Record<string, ParamValueJson>;
+  selectedPresetGroups: string[];
+  selectedPresets: string[];
+  allPresets: ParamPreset[];
+  presetGroups: PresetGroupLite[];
+  values: Record<string, ParamValueJson>;
+  onChange: (next: Record<string, ParamValueJson>) => void;
+}) {
+  const localNames = new Set(localParams.map((p) => p.name));
+  const available: Array<ParamSpec & { src: "local" | "global" }> = [
+    ...localParams.map((p) => ({ ...p, src: "local" as const })),
+    ...globalParams
+      .filter(
+        (g) => selectedGlobals.includes(g.name) && !localNames.has(g.name),
+      )
+      .map((g) => ({ ...g, src: "global" as const })),
+  ];
+
+  const presetByName = new Map(allPresets.map((p) => [p.name, p]));
+
+  /** Resuelve valor efectivo + origen por parámetro siguiendo la cadena
+   *  de prioridad del backend (override > run_default > presets sueltos
+   *  > grupos > param.default). */
+  function resolveFor(p: ParamSpec): {
+    value: ParamValueJson | undefined;
+    origin: SessionValueOrigin;
+  } {
+    if (Object.prototype.hasOwnProperty.call(values, p.name)) {
+      return { value: values[p.name], origin: { source: "session_override" } };
+    }
+    if (Object.prototype.hasOwnProperty.call(runDefaults, p.name)) {
+      return { value: runDefaults[p.name], origin: { source: "run_default" } };
+    }
+    // Presets sueltos seleccionados (en orden).
+    for (const presetName of selectedPresets) {
+      const pr = presetByName.get(presetName);
+      if (!pr) continue;
+      if (Object.prototype.hasOwnProperty.call(pr.values, p.name)) {
+        return {
+          value: pr.values[p.name],
+          origin: { source: "selected_preset", presetName },
+        };
+      }
+    }
+    // Grupos seleccionados, recorriendo sus presets en orden.
+    for (const groupName of selectedPresetGroups) {
+      const grp = presetGroups.find((g) => g.name === groupName);
+      if (!grp) continue;
+      for (const presetName of grp.preset_names) {
+        const pr = presetByName.get(presetName);
+        if (!pr) continue;
+        if (Object.prototype.hasOwnProperty.call(pr.values, p.name)) {
+          return {
+            value: pr.values[p.name],
+            origin: { source: "group_preset", groupName, presetName },
+          };
+        }
+      }
+    }
+    if (p.default != null) {
+      return { value: p.default, origin: { source: "param_default" } };
+    }
+    return { value: undefined, origin: { source: "none" } };
+  }
+
+  function setVal(name: string, v: ParamValueJson | null) {
+    const next = { ...values };
+    if (v == null) delete next[name];
+    else next[name] = v;
+    onChange(next);
+  }
+
+  if (available.length === 0) {
+    return (
+      <div className="text-sm text-dim">
+        Este proyecto no tiene parámetros locales ni globales seleccionados.
+      </div>
+    );
+  }
+
+  const overrideCount = available.filter((p) => p.name in values).length;
+  const requiredMissing = available.filter((p) => {
+    if (paramRequirements[p.name] !== "required") return false;
+    const r = resolveFor(p);
+    return r.value == null || r.value === "" ||
+      (Array.isArray(r.value) && r.value.length === 0);
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-cyan-200 border border-cyan-600 rounded p-3 text-xs text-cyan-950">
+        <strong>Solo para esta sesión.</strong> Acá ves el valor que va a
+        usar cada parámetro al ejecutar y de dónde sale (cadena de
+        prioridad del proyecto). Podés sobrescribir cualquiera para la
+        próxima ejecución — los overrides se descartan al recargar la
+        página. Para respuestas persistentes, usá las "Respuestas
+        guardadas" globales.
+      </div>
+
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs uppercase tracking-wider text-muted">
+          Parámetros · {available.length}
+          {overrideCount > 0 && (
+            <span className="ml-2 text-cyan-300 normal-case">
+              {overrideCount} con override
+            </span>
+          )}
+        </h4>
+        {overrideCount > 0 && (
+          <button
+            onClick={() => onChange({})}
+            className="text-[11px] text-cyan-300 underline"
+          >
+            ↶ Limpiar todos los overrides
+          </button>
+        )}
+      </div>
+
+      {requiredMissing.length > 0 && (
+        <div className="text-xs text-red-300 bg-red-500/10 border border-red-700 rounded p-2">
+          ⚠ Faltan valores obligatorios:{" "}
+          <code>{requiredMissing.map((p) => p.name).join(", ")}</code>
+        </div>
+      )}
+
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-muted text-[10px] uppercase tracking-wider">
+            <th className="text-left px-2 py-1 font-medium">Parámetro</th>
+            <th className="text-left px-2 py-1 font-medium">Valor efectivo</th>
+            <th className="text-left px-2 py-1 font-medium">Origen</th>
+            <th className="text-left px-2 py-1 font-medium">
+              Override de sesión
+            </th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {available.map((p) => {
+            const { value, origin } = resolveFor(p);
+            const isReq = paramRequirements[p.name] === "required";
+            const isOverridden = origin.source === "session_override";
+            const empty =
+              value == null ||
+              value === "" ||
+              (Array.isArray(value) && value.length === 0);
+            return (
+              <tr key={p.name} className="border-t border-surface align-top">
+                <td className="px-2 py-1.5">
+                  <code className="font-mono text-xs font-semibold">
+                    :{p.name}
+                  </code>
+                  {isReq && (
+                    <span
+                      className="ml-1 text-[10px] text-amber-300"
+                      title="Parámetro obligatorio"
+                    >
+                      ★
+                    </span>
+                  )}
+                  <div className="text-[10px] text-dim">
+                    {p.kind} · {p.src}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 font-mono text-xs">
+                  {empty ? (
+                    <span className="text-dim italic">(sin valor)</span>
+                  ) : (
+                    <span
+                      className={
+                        isOverridden ? "text-cyan-300" : "text-app"
+                      }
+                    >
+                      {formatParamDefault(value, p.kind)}
+                    </span>
+                  )}
+                </td>
+                <td className="px-2 py-1.5">
+                  <SessionOriginBadge origin={origin} empty={empty} />
+                </td>
+                <td className="px-2 py-1.5">
+                  <RunDefaultEditor
+                    param={p}
+                    value={isOverridden ? value : undefined}
+                    onChange={(nv) => setVal(p.name, nv)}
+                  />
+                </td>
+                <td className="px-2 py-1.5">
+                  {isOverridden && (
+                    <button
+                      onClick={() => setVal(p.name, null)}
+                      className="text-[11px] text-cyan-300 underline whitespace-nowrap"
+                      title="Quitar override y volver al valor heredado"
+                    >
+                      ↶ heredar
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SessionOriginBadge({
+  origin,
+  empty,
+}: {
+  origin: SessionValueOrigin;
+  empty: boolean;
+}) {
+  if (empty) {
+    return (
+      <span className="text-[10px] text-dim italic">sin valor</span>
+    );
+  }
+  switch (origin.source) {
+    case "session_override":
+      return (
+        <span className="text-[10px] text-cyan-300">
+          ✎ override de sesión
+        </span>
+      );
+    case "run_default":
+      return (
+        <span className="text-[10px] text-dim">
+          respuesta por defecto del proyecto
+        </span>
+      );
+    case "selected_preset":
+      return (
+        <span className="text-[10px] text-dim">
+          respuesta{" "}
+          <code className="text-cyan-300">🏷 {origin.presetName}</code>
+        </span>
+      );
+    case "group_preset":
+      return (
+        <span className="text-[10px] text-dim">
+          grupo{" "}
+          <code className="text-cyan-300">📦 {origin.groupName}</code> →{" "}
+          <code className="text-cyan-300">{origin.presetName}</code>
+        </span>
+      );
+    case "param_default":
+      return (
+        <span className="text-[10px] text-dim">
+          default del parámetro
+        </span>
+      );
+    case "none":
+      return <span className="text-[10px] text-dim">—</span>;
+  }
 }

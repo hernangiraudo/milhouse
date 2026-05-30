@@ -11,22 +11,33 @@
     "FechaDesde",
     "ComitentesPrex",
     "ComitentesCarteraPropia",
-    "ComitentesCarteraClientes"
+    "ComitentesCarteraClientes",
+    "ComitentesPrexIncluir",
+    "ComitentesCarteraPropiaIncluir",
+    "ComitentesCarteraClientesIncluir"
   ],
   "param_requirements": {
-    "FechaHasta": "required",
-    "Comitente": "optional",
     "ComitentesCarteraClientes": "optional",
-    "ComitentesCarteraPropia": "optional",
     "ComitentesPrex": "optional",
-    "FechaDesde": "required"
+    "ComitentesPrexIncluir": "optional",
+    "Comitente": "optional",
+    "FechaHasta": "required",
+    "FechaDesde": "required",
+    "ComitentesCarteraPropia": "optional",
+    "ComitentesCarteraClientesIncluir": "optional",
+    "ComitentesCarteraPropiaIncluir": "optional"
   },
-  "run_defaults": {},
+  "run_defaults": {
+    "ComitentesCarteraPropiaIncluir": "1",
+    "ComitentesPrexIncluir": "0",
+    "ComitentesCarteraClientesIncluir": "1"
+  },
   "selected_preset_groups": [
     "c17215 YTD"
   ],
+  "selected_presets": [],
   "api": {
-    "exposed": false,
+    "exposed": true,
     "token": null,
     "export_datasets": [],
     "accept_parameters": false

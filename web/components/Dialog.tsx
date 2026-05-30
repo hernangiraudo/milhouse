@@ -10,6 +10,15 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 
 type Variant = "info" | "warning" | "danger";
 
+export interface ChoiceOption<V extends string = string> {
+  /** Valor que resuelve la promesa cuando se elige esta opción. */
+  value: V;
+  label: string;
+  /** Estilo visual del botón. `primary` = botón resaltado (color accent),
+   *  `secondary` = botón neutro, `danger` = botón rojo. Default secondary. */
+  variant?: "primary" | "secondary" | "danger";
+}
+
 type DialogSpec =
   | { kind: "alert"; title?: string; message: string; variant?: Variant; ok?: string }
   | {
@@ -30,6 +39,13 @@ type DialogSpec =
       ok?: string;
       cancel?: string;
       validate?: (v: string) => string | null;
+    }
+  | {
+      kind: "choose";
+      title?: string;
+      message: string;
+      variant?: Variant;
+      options: ChoiceOption[];
     };
 
 type DialogResolver = (result: unknown) => void;
@@ -60,6 +76,13 @@ interface DialogContextShape {
       validate?: (v: string) => string | null;
     },
   ) => Promise<string | null>;
+  /** Diálogo con N opciones explícitas. Resuelve con el `value` de la
+   *  opción elegida, o `null` si el usuario cierra (Esc / click afuera). */
+  choose: <V extends string>(
+    msg: string,
+    options: ChoiceOption<V>[],
+    opts?: { title?: string; variant?: Variant },
+  ) => Promise<V | null>;
 }
 
 const DialogContext = createContext<DialogContextShape | null>(null);
@@ -75,6 +98,13 @@ export function useDialog(): DialogContextShape {
       },
       confirm: async (m) => window.confirm(m),
       prompt: async (m, opts) => window.prompt(m, opts?.defaultValue ?? "") ?? null,
+      choose: async (m, options) => {
+        const labels = options.map((o, i) => `${i + 1}) ${o.label}`).join("\n");
+        const raw = window.prompt(`${m}\n\n${labels}\n\nIngresá el número:`);
+        const n = raw ? parseInt(raw, 10) - 1 : -1;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (options[n]?.value ?? null) as any;
+      },
     };
   }
   return ctx;
@@ -120,6 +150,18 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
         ok: opts?.ok,
         cancel: opts?.cancel,
         validate: opts?.validate,
+      }),
+    choose: <V extends string>(
+      message: string,
+      options: ChoiceOption<V>[],
+      opts?: { title?: string; variant?: Variant },
+    ) =>
+      show<V | null>({
+        kind: "choose",
+        message,
+        title: opts?.title,
+        variant: opts?.variant,
+        options: options as ChoiceOption[],
       }),
   };
 
@@ -177,6 +219,7 @@ function DialogRenderer({
   function ok() {
     if (spec.kind === "alert") return onFinish(undefined);
     if (spec.kind === "confirm") return onFinish(true);
+    if (spec.kind === "choose") return; // choose se confirma desde cada botón
     // prompt
     const err = spec.validate?.(value) ?? null;
     if (err) {
@@ -202,6 +245,8 @@ function DialogRenderer({
         : "Aviso"
       : spec.kind === "confirm"
       ? "Confirmar"
+      : spec.kind === "choose"
+      ? "Elegir una opción"
       : "Entrada");
 
   const defaultOk =
@@ -264,26 +309,78 @@ function DialogRenderer({
           </div>
         )}
 
-        <div className="flex gap-2 justify-end mt-4">
-          {spec.kind !== "alert" && (
-            <button
-              onClick={cancel}
-              className="text-sm px-3 py-1.5 rounded milhouse-btn-secondary"
-            >
-              {("cancel" in spec && spec.cancel) || "Cancelar"}
-            </button>
+        <div className="flex gap-2 justify-end mt-4 flex-wrap">
+          {spec.kind === "choose" ? (
+            <>
+              <button
+                onClick={cancel}
+                className="text-sm px-3 py-1.5 rounded milhouse-btn-secondary"
+              >
+                Cancelar
+              </button>
+              {spec.options.map((opt) => {
+                const v = opt.variant ?? "secondary";
+                if (v === "primary") {
+                  return (
+                    <button
+                      key={opt.value}
+                      onClick={() => onFinish(opt.value)}
+                      className="text-sm font-semibold px-3 py-1.5 rounded"
+                      style={{
+                        background: accent.bg,
+                        color: accent.ink,
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                }
+                if (v === "danger") {
+                  return (
+                    <button
+                      key={opt.value}
+                      onClick={() => onFinish(opt.value)}
+                      className="text-sm font-semibold px-3 py-1.5 rounded text-white"
+                      style={{ background: "rgb(220 38 38)" }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                }
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => onFinish(opt.value)}
+                    className="text-sm px-3 py-1.5 rounded milhouse-btn-secondary"
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </>
+          ) : (
+            <>
+              {spec.kind !== "alert" && (
+                <button
+                  onClick={cancel}
+                  className="text-sm px-3 py-1.5 rounded milhouse-btn-secondary"
+                >
+                  {("cancel" in spec && spec.cancel) || "Cancelar"}
+                </button>
+              )}
+              <button
+                autoFocus={spec.kind !== "prompt"}
+                onClick={ok}
+                className="text-sm font-semibold px-3 py-1.5 rounded"
+                style={{
+                  background: accent.bg,
+                  color: accent.ink,
+                }}
+              >
+                {("ok" in spec && spec.ok) || defaultOk}
+              </button>
+            </>
           )}
-          <button
-            autoFocus={spec.kind !== "prompt"}
-            onClick={ok}
-            className="text-sm font-semibold px-3 py-1.5 rounded"
-            style={{
-              background: accent.bg,
-              color: accent.ink,
-            }}
-          >
-            {("ok" in spec && spec.ok) || defaultOk}
-          </button>
         </div>
       </div>
     </div>

@@ -746,11 +746,19 @@ pub async fn create_job(
         for (name, value) in &cfg.run_defaults {
             out.entry(name.clone()).or_insert_with(|| value.clone());
         }
-        // Grupos de respuestas seleccionados para este proyecto: aplican
-        // sus presets en orden, sumando valores como fallback (no pisan
-        // request ni run_defaults — son nivel 3 en la cadena).
+        // Grupos de respuestas + presets sueltos seleccionados para este
+        // proyecto: aplican sus presets en orden, sumando valores como
+        // fallback (no pisan request ni run_defaults — son nivel 3 en la
+        // cadena).
         {
             let globals = state.global_params.read().await.clone();
+            let resolve_preset = |name: &String| -> Option<crate::config::ParamPreset> {
+                cfg.presets
+                    .iter()
+                    .find(|p| &p.name == name)
+                    .or_else(|| globals.presets.iter().find(|p| &p.name == name))
+                    .cloned()
+            };
             for group_name in &cfg.selected_preset_groups {
                 let Some(group) = globals
                     .preset_groups
@@ -760,17 +768,16 @@ pub async fn create_job(
                     continue;
                 };
                 for preset_name in &group.preset_names {
-                    let preset_pool = cfg
-                        .presets
-                        .iter()
-                        .find(|p| &p.name == preset_name)
-                        .or_else(|| {
-                            globals.presets.iter().find(|p| &p.name == preset_name)
-                        });
-                    let Some(pr) = preset_pool else { continue };
+                    let Some(pr) = resolve_preset(preset_name) else { continue };
                     for (k, v) in &pr.values {
                         out.entry(k.clone()).or_insert_with(|| v.clone());
                     }
+                }
+            }
+            for preset_name in &cfg.selected_presets {
+                let Some(pr) = resolve_preset(preset_name) else { continue };
+                for (k, v) in &pr.values {
+                    out.entry(k.clone()).or_insert_with(|| v.clone());
                 }
             }
         }
@@ -1259,6 +1266,16 @@ pub async fn ai_review_sql(
     Json(req): Json<crate::ai::ReviewSqlReq>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     match crate::ai::review_sql(req).await {
+        Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
+        Err(e) => Err((StatusCode::BAD_REQUEST, format!("{e:#}"))),
+    }
+}
+
+pub async fn ai_modify_step(
+    State(_state): State<AppState>,
+    Json(req): Json<crate::ai::ModifyStepReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    match crate::ai::modify_step(req).await {
         Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
         Err(e) => Err((StatusCode::BAD_REQUEST, format!("{e:#}"))),
     }

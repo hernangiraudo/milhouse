@@ -133,7 +133,7 @@ pub async fn build_step(req: BuildStepReq) -> Result<BuildStepResp> {
 
     // Primer intento.
     let (step_value_1, raw_1) =
-        call_anthropic_for_step(&api_key, &user_msg, &[]).await?;
+        call_anthropic_for_step(&api_key, SYSTEM_PROMPT, &user_msg, &[]).await?;
     let (step_value, raw) = match validate_step(&step_value_1) {
         Ok(()) => (step_value_1, raw_1),
         Err(validation_err) => {
@@ -157,7 +157,7 @@ pub async fn build_step(req: BuildStepReq) -> Result<BuildStepResp> {
                 ),
             ];
             let (step_value_2, raw_2) =
-                call_anthropic_for_step(&api_key, &user_msg, &prior).await?;
+                call_anthropic_for_step(&api_key, SYSTEM_PROMPT, &user_msg, &prior).await?;
             match validate_step(&step_value_2) {
                 Ok(()) => (step_value_2, raw_2),
                 Err(e) => {
@@ -182,6 +182,7 @@ pub async fn build_step(req: BuildStepReq) -> Result<BuildStepResp> {
 /// feedback del error de validación).
 async fn call_anthropic_for_step(
     api_key: &str,
+    system_prompt: &str,
     user_msg: &str,
     prior_turns: &[(String, String)],
 ) -> Result<(Value, String)> {
@@ -193,7 +194,7 @@ async fn call_anthropic_for_step(
     let body = json!({
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": 2048,
-        "system": SYSTEM_PROMPT,
+        "system": system_prompt,
         "messages": messages,
     });
 
@@ -272,6 +273,160 @@ fn validate_step(v: &Value) -> std::result::Result<(), String> {
         }
     }
     Ok(())
+}
+
+// =====================================================================
+// Milhouse-AI · Modificar un paso existente
+// =====================================================================
+
+const MODIFY_SYSTEM_PROMPT: &str = r#"
+Sos Milhouse-AI: ayudás a modificar un PASO de ETL existente en el sistema
+Milhouse. Recibís el JSON actual del paso y una instrucción en lenguaje natural
+de lo que hay que cambiar. Devolvés ÚNICAMENTE el JSON modificado del paso,
+con los mismos campos invariantes (id, step_uid, kind, depends_on, group, etc.)
+salvo que la instrucción pida explícitamente cambiarlos.
+
+Reglas:
+- Mantené el `id` y el `step_uid` del paso original tal como están.
+- Mantené el `kind` salvo que se pida explícitamente cambiarlo.
+- Aplicá SOLO los cambios que pida la instrucción; dejá el resto igual.
+- Devolvé SOLO el JSON del paso. Sin comentarios, sin markdown, sin prosa.
+- Respetá todos los shapes y reglas del system prompt de build_step.
+- Si el paso falló y te dan un error, analizá la causa y corregí el paso.
+
+SHAPES POR KIND (igual que en build_step):
+  sql_query: { "query": "...", "connection": "...", "output_table": "..." }
+  sql_exec:  { "query": "...", "connection": "..." }
+  join:      { "left": "...", "right": "...", "left_on": ["..."],
+                "right_on": ["..."], "how": "inner|left|right|full",
+                "output_table": "..." }
+  lookup:    { "input": "...", "master": "...", "key": "...",
+                "master_key": "...", "select": [{"from":"...","as":"..."}],
+                "output_table": "..." }
+  transform: { "input": "...", "operations": [...], "output_table": "..." }
+  filter_and_subset: { "input": "...", "filter": "expr", "select": [...],
+                        "output_table": "..." }
+  sort: { "input": "...", "by": [{"column":"...","desc":true|false}],
+           "output_table": "..." }
+  export: { "input": "...", "target": {...} }
+  procedural: { "input": "...", "engine":"rhai"|"rust", "script": "...",
+                "state_init": {...}, "output_table": "..." }
+  union: { "inputs": ["step1","step2",...], "output_table": "..." }
+"#;
+
+#[derive(Debug, Deserialize)]
+pub struct ModifyStepReq {
+    /// JSON actual del paso.
+    pub current_step: Value,
+    /// Instrucción en lenguaje natural de qué cambiar.
+    pub instruction: String,
+    /// Error del último run de este paso (opcional, para debugging).
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// Step ids de todos los pasos del proyecto.
+    #[serde(default)]
+    pub existing_step_ids: Vec<String>,
+    /// Map step_id → output_table.
+    #[serde(default)]
+    pub existing_tables: Value,
+    /// Conexiones disponibles.
+    #[serde(default)]
+    pub connections: Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModifyStepResp {
+    pub step: Value,
+    pub raw: String,
+}
+
+pub async fn modify_step(req: ModifyStepReq) -> Result<ModifyStepResp> {
+    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+        anyhow!(
+            "ANTHROPIC_API_KEY no está configurada en el server. \
+             Setea la variable de entorno y reiniciá el backend."
+        )
+    })?;
+
+    let error_section = match &req.last_error {
+        Some(e) if !e.trim().is_empty() => format!(
+            "\nERROR DEL ÚLTIMO RUN\n====================\n{}\n",
+            e.chars().take(2000).collect::<String>()
+        ),
+        _ => String::new(),
+    };
+
+    let user_msg = format!(
+        "PASO ACTUAL (JSON)\n==================\n{}\n\
+         CONTEXTO DEL PROYECTO\n=====================\n\
+         Steps existentes (ids): {}\n\
+         Tablas existentes (step_id → output_table): {}\n\
+         Conexiones disponibles: {}\n\
+         {}\
+         INSTRUCCIÓN DEL USUARIO\n=======================\n{}\n\n\
+         Devolveme SOLO el JSON del paso modificado.",
+        serde_json::to_string_pretty(&req.current_step)
+            .unwrap_or_else(|_| "{}".into()),
+        serde_json::to_string(&req.existing_step_ids).unwrap_or_else(|_| "[]".into()),
+        serde_json::to_string(&req.existing_tables).unwrap_or_else(|_| "{}".into()),
+        serde_json::to_string(&req.connections).unwrap_or_else(|_| "[]".into()),
+        error_section,
+        req.instruction,
+    );
+
+    let (step_value_1, raw_1) =
+        call_anthropic_for_step(&api_key, MODIFY_SYSTEM_PROMPT, &user_msg, &[]).await?;
+
+    // Preservar id y step_uid del original.
+    let step_value_1 = preserve_identity(step_value_1, &req.current_step);
+
+    let (step_value, raw) = match validate_step(&step_value_1) {
+        Ok(()) => (step_value_1, raw_1),
+        Err(validation_err) => {
+            tracing::info!(
+                "AI generó un step modificado inválido ({validation_err}); reintentando"
+            );
+            let prior = vec![
+                ("assistant".to_string(), raw_1.clone()),
+                (
+                    "user".to_string(),
+                    format!(
+                        "Ese JSON no es válido para Milhouse:\n  {validation_err}\n\n\
+                         Corregilo y devolveme SOLO el JSON corregido (sin comentarios, \
+                         sin markdown).",
+                    ),
+                ),
+            ];
+            let (step_value_2, raw_2) =
+                call_anthropic_for_step(&api_key, MODIFY_SYSTEM_PROMPT, &user_msg, &prior).await?;
+            let step_value_2 = preserve_identity(step_value_2, &req.current_step);
+            match validate_step(&step_value_2) {
+                Ok(()) => (step_value_2, raw_2),
+                Err(e) => {
+                    return Err(anyhow!(
+                        "El AI no logró generar un step válido después de 2 intentos. \
+                         Último error: {e}.\nÚltimo intento:\n{}",
+                        raw_2.chars().take(800).collect::<String>()
+                    ));
+                }
+            }
+        }
+    };
+
+    Ok(ModifyStepResp { step: step_value, raw })
+}
+
+/// Preserva `id` y `step_uid` del paso original en el JSON devuelto por el AI.
+fn preserve_identity(mut generated: Value, original: &Value) -> Value {
+    if let (Value::Object(gen), Value::Object(orig)) = (&mut generated, original) {
+        if let Some(id) = orig.get("id") {
+            gen.insert("id".into(), id.clone());
+        }
+        if let Some(uid) = orig.get("step_uid") {
+            gen.insert("step_uid".into(), uid.clone());
+        }
+    }
+    generated
 }
 
 fn strip_code_fence(s: &str) -> &str {

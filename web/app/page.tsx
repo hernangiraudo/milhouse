@@ -14,6 +14,20 @@ import { RoadmapPanel } from "@/components/RoadmapPanel";
 import { SqlMonitorPanel } from "@/components/SqlMonitorPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UserChip } from "@/components/LoginGate";
+import {
+  Pencil,
+  SlidersHorizontal,
+  Ruler,
+  Play,
+  CalendarClock,
+  ScrollText,
+  FolderOpen,
+  Plug,
+  Activity,
+  Users,
+  Map as MapIcon,
+  type LucideIcon,
+} from "lucide-react";
 
 type Section =
   | "design"
@@ -28,18 +42,18 @@ type Section =
   | "roadmap"
   | "sql_monitor";
 
-const SECTIONS: Array<{ id: Section; label: string; icon: string }> = [
-  { id: "design", label: "Diseño", icon: "✏️" },
-  { id: "exec_params", label: "Parámetros de Ejecución", icon: "⚙️" },
-  { id: "constants", label: "Constantes", icon: "📐" },
-  { id: "run", label: "Ejecutar proyecto", icon: "▶" },
-  { id: "schedules", label: "Planificación", icon: "⏱" },
-  { id: "review", label: "Revisión de logs", icon: "📜" },
-  { id: "cases", label: "Casos", icon: "🗂" },
-  { id: "connections", label: "Conexiones", icon: "🔌" },
-  { id: "sql_monitor", label: "Monitor SQL", icon: "📊" },
-  { id: "users", label: "Usuarios", icon: "👤" },
-  { id: "roadmap", label: "Roadmap", icon: "🗺️" },
+const SECTIONS: Array<{ id: Section; label: string; Icon: LucideIcon }> = [
+  { id: "design",       label: "Diseño",            Icon: Pencil },
+  { id: "exec_params",  label: "Parámetros",        Icon: SlidersHorizontal },
+  { id: "constants",    label: "Constantes",        Icon: Ruler },
+  { id: "run",          label: "Ejecutar proyecto", Icon: Play },
+  { id: "schedules",    label: "Planificación",     Icon: CalendarClock },
+  { id: "review",       label: "Revisión de logs",  Icon: ScrollText },
+  { id: "cases",        label: "Casos",             Icon: FolderOpen },
+  { id: "connections",  label: "Conexiones",        Icon: Plug },
+  { id: "sql_monitor",  label: "Monitor SQL",       Icon: Activity },
+  { id: "users",        label: "Usuarios",          Icon: Users },
+  { id: "roadmap",      label: "Roadmap",           Icon: MapIcon },
 ];
 
 export default function Home() {
@@ -60,7 +74,7 @@ export default function Home() {
             <button
               key={s.id}
               onClick={() => setSection(s.id)}
-              className={`w-full text-left px-5 py-2.5 text-sm border-l-2 transition-colors ${
+              className={`w-full text-left px-5 py-2.5 text-sm border-l-2 transition-colors flex items-center gap-2.5 ${
                 section === s.id
                   ? "border-accent bg-surface-2 font-semibold"
                   : "border-transparent text-muted hover:bg-surface-2 hover:text-app"
@@ -69,8 +83,8 @@ export default function Home() {
                 section === s.id ? { borderLeftColor: "var(--accent)" } : {}
               }
             >
-              <span className="mr-2">{s.icon}</span>
-              {s.label}
+              <s.Icon size={16} strokeWidth={2} />
+              <span>{s.label}</span>
             </button>
           ))}
         </nav>

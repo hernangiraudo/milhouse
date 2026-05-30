@@ -5,10 +5,10 @@
 #   ./scripts/setup_and_run.sh
 #
 # Lo que hace:
-#   1. Si hay procesos previos escuchando en :8090 o :3000, los mata
-#      (pide confirmación a menos que se pase --force). Esto evita que
-#      el cargo build falle por "Access is denied" si el binario está
-#      corriendo y lockea el .exe.
+#   1. Llama a ./scripts/stop.sh para detener backend y frontend si
+#      están corriendo (por PID file o por puerto). Esto evita que el
+#      cargo build falle por "Access is denied" si el binario está
+#      lockeando milhouse.exe en target/debug.
 #   2. Corre ./scripts/setup.sh (verifica toolchains, compila el backend,
 #      genera la base demo, instala deps del frontend). Idempotente.
 #   3. Si el setup terminó OK, corre ./scripts/run.sh: arranca backend
@@ -36,25 +36,14 @@ c_red()    { printf '\033[31m%s\033[0m\n' "$*"; }
 c_yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
 c_dim()    { printf '\033[90m%s\033[0m\n' "$*"; }
 
-# Parsear flags reenviables al run.sh
-FORCE=0
-for arg in "$@"; do
-    case "$arg" in
-        --force) FORCE=1 ;;
-    esac
-done
-
-# shellcheck source=scripts/lib_ports.sh
-source "$SCRIPT_DIR/lib_ports.sh"
-
 c_cyan "==> Milhouse · setup + run"
 echo
 
-# 0) Liberar puertos antes de cualquier cosa: si el binario está corriendo,
-#    cargo build no puede sobreescribir milhouse.exe (Access denied).
-c_cyan "==> Verificando puertos :8090 y :3000"
-if ! stop_port_owners 8090 "backend" "$FORCE"; then exit 1; fi
-if ! stop_port_owners 3000 "frontend" "$FORCE"; then exit 1; fi
+# 0) Detener servicios previos antes de cualquier cosa: si el binario
+#    está corriendo, cargo build no puede sobreescribir milhouse.exe
+#    (Access denied). stop.sh cubre PID files y puerto.
+c_cyan "==> Deteniendo servicios previos si están corriendo"
+bash "$SCRIPT_DIR/stop.sh"
 echo
 
 # 1) Setup (hereda env vars como ROWS y FORCE_SEED)

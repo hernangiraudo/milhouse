@@ -398,6 +398,23 @@ export async function aiBuildStep(body: {
   return r.json();
 }
 
+export async function aiModifyStep(body: {
+  current_step: Record<string, unknown>;
+  instruction: string;
+  last_error?: string | null;
+  existing_step_ids?: string[];
+  existing_tables?: Record<string, string>;
+  connections?: Array<{ name: string; type: string }>;
+}): Promise<{ step: Record<string, unknown>; raw: string }> {
+  const r = await fetch(`${API_BASE}/api/ai/modify-step`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function deleteConnection(name: string): Promise<void> {
   const r = await fetch(
     `${API_BASE}/api/connections/${encodeURIComponent(name)}`,

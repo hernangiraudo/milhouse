@@ -54,6 +54,12 @@ pub struct EtlConfig {
     /// gana en colisión).
     #[serde(default)]
     pub selected_preset_groups: Vec<String>,
+    /// Presets de respuestas individuales (locales o globales) que
+    /// aplican siempre al ejecutar este proyecto. Se aplican junto con
+    /// los grupos seleccionados, en el orden de esta lista. Pensado
+    /// para combinar grupos + presets sueltos.
+    #[serde(default)]
+    pub selected_presets: Vec<String>,
     /// Configuración para exponer el proyecto como API REST pública.
     #[serde(default)]
     pub api: ApiConfig,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { StepAIModifyDialog } from "./StepAIModifyDialog";
 import { SqlQueryVisual } from "./step_editors/SqlQueryVisual";
 import { SqlExecVisual } from "./step_editors/SqlExecVisual";
 import { JoinVisual } from "./step_editors/JoinVisual";
@@ -40,6 +41,10 @@ interface Props {
   allGroups: string[];
   /** Pasos previos con su output_table, para que el editor Join elija de ahí. */
   availableTables?: Array<{ output_table: string; step_id: string }>;
+  /** Mapa stepId → output_table para el contexto del AI. */
+  existingTablesMap?: Record<string, string>;
+  /** Error del último run de este paso (si falló). */
+  lastError?: string | null;
   onChange: (next: Step) => void;
   onDelete: () => void;
 }
@@ -49,10 +54,13 @@ export function StepEditor({
   allStepIds,
   allGroups,
   availableTables = [],
+  existingTablesMap = {},
+  lastError,
   onChange,
   onDelete,
 }: Props) {
   const [mode, setMode] = useState<"form" | "json">("form");
+  const [showAIModify, setShowAIModify] = useState(false);
   const [jsonText, setJsonText] = useState(() =>
     JSON.stringify(step, null, 2),
   );
@@ -121,7 +129,7 @@ export function StepEditor({
             </code>
           )}
         </div>
-        <div className="flex items-center gap-1 text-xs">
+        <div className="flex items-center gap-1 text-xs flex-wrap">
           <button
             type="button"
             onClick={() => setMode("form")}
@@ -146,13 +154,44 @@ export function StepEditor({
           </button>
           <button
             type="button"
+            onClick={() => setShowAIModify(true)}
+            className={`px-2 py-1 rounded border flex items-center gap-1 ${
+              lastError
+                ? "border-red-600 bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                : "border-emerald-700 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+            }`}
+            title={
+              lastError
+                ? "El paso falló — pedile al AI que lo corrija"
+                : "Pedile al AI que modifique este paso"
+            }
+          >
+            <span>✨</span>
+            <span>{lastError ? "Corregir con AI" : "Modificar con AI"}</span>
+          </button>
+          <button
+            type="button"
             onClick={onDelete}
-            className="ml-2 px-2 py-1 rounded border border-red-700 bg-red-500/10 text-red-300 hover:bg-red-500/30"
+            className="ml-1 px-2 py-1 rounded border border-red-700 bg-red-500/10 text-red-300 hover:bg-red-500/30"
           >
             Eliminar
           </button>
         </div>
       </div>
+
+      {showAIModify && (
+        <StepAIModifyDialog
+          currentStep={step as Record<string, unknown>}
+          lastError={lastError}
+          existingStepIds={allStepIds}
+          existingTables={existingTablesMap}
+          onClose={() => setShowAIModify(false)}
+          onApply={(modified) => {
+            onChange(modified as Step);
+            setShowAIModify(false);
+          }}
+        />
+      )}
 
       {mode === "form" ? (
         <>

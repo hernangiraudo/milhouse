@@ -94,6 +94,13 @@ pub async fn run_project(
     }
     {
         let globals = state.global_params.read().await.clone();
+        let resolve_preset = |name: &String| -> Option<crate::config::ParamPreset> {
+            cfg.presets
+                .iter()
+                .find(|p| &p.name == name)
+                .or_else(|| globals.presets.iter().find(|p| &p.name == name))
+                .cloned()
+        };
         for group_name in &cfg.selected_preset_groups {
             let Some(group) = globals
                 .preset_groups
@@ -103,15 +110,16 @@ pub async fn run_project(
                 continue;
             };
             for preset_name in &group.preset_names {
-                let preset_pool = cfg
-                    .presets
-                    .iter()
-                    .find(|p| &p.name == preset_name)
-                    .or_else(|| globals.presets.iter().find(|p| &p.name == preset_name));
-                let Some(pr) = preset_pool else { continue };
+                let Some(pr) = resolve_preset(preset_name) else { continue };
                 for (k, v) in &pr.values {
                     parameters.entry(k.clone()).or_insert_with(|| v.clone());
                 }
+            }
+        }
+        for preset_name in &cfg.selected_presets {
+            let Some(pr) = resolve_preset(preset_name) else { continue };
+            for (k, v) in &pr.values {
+                parameters.entry(k.clone()).or_insert_with(|| v.clone());
             }
         }
     }

@@ -4,10 +4,10 @@
 #   .\scripts\setup_and_run.ps1
 #
 # Lo que hace:
-#   1. Si hay procesos previos en :8090 o :3000, los mata (pide
-#      confirmación a menos que -Force). Evita que cargo build falle
-#      por "Access is denied" si milhouse.exe está corriendo y
-#      lockeando el binario en target\debug.
+#   1. Llama a scripts\stop.ps1 para detener backend y frontend si
+#      están corriendo (por PID file o por puerto). Esto evita que
+#      cargo build falle por "Access is denied" cuando milhouse.exe
+#      lockea su propio binario en target\debug.
 #   2. Llama a scripts\setup.ps1 (toolchains, cargo build, seed, deps
 #      del front). Idempotente.
 #   3. Si el setup terminó OK, llama a scripts\run.ps1: arranca back
@@ -33,16 +33,14 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-. (Join-Path $PSScriptRoot "lib_ports.ps1")
-
 Write-Host "==> Milhouse · setup + run" -ForegroundColor Cyan
 Write-Host ""
 
-# 0) Liberar puertos antes de cualquier cosa: si el binario está corriendo,
-#    cargo build no puede sobreescribir milhouse.exe (Access denied).
-Write-Host "==> Verificando puertos 8090 y 3000" -ForegroundColor Cyan
-if (-not (Stop-PortOwners 8090 "backend"  -Force:$Force)) { exit 1 }
-if (-not (Stop-PortOwners 3000 "frontend" -Force:$Force)) { exit 1 }
+# 0) Detener servicios previos antes de cualquier cosa: si el binario
+#    está corriendo, cargo build no puede sobreescribir milhouse.exe
+#    (Access denied). stop.ps1 cubre PID files y puerto.
+Write-Host "==> Deteniendo servicios previos si están corriendo" -ForegroundColor Cyan
+& (Join-Path $PSScriptRoot "stop.ps1")
 Write-Host ""
 
 # 1) Setup
