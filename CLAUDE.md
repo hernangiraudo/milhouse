@@ -137,8 +137,9 @@ configs/
 
 scripts/
   setup.ps1 setup.sh      instala dependencias + compila + seed
-  start.ps1 start.sh      arranca backend + frontend
-  setup_and_run.ps1/.sh   setup + start en un solo paso
+  run.ps1 run.sh          arranca backend + frontend (sobreviven SSH)
+  stop.ps1 stop.sh        frena ambos procesos (lee PIDs de data/run/)
+  setup_and_run.ps1/.sh   setup + run en un solo paso
 
 web/
   app/
@@ -648,7 +649,7 @@ step_sql_session, job_eta, job_finished
   decimales con 2 decimales fijos, ambos con separador de miles.
   La detección de "es columna numérica" usa el `dtype` del schema, no
   inspecciona valor por valor.
-- Scripts: `setup`, `start`, `setup_and_run` (cross-platform).
+- Scripts: `setup`, `run`, `stop`, `setup_and_run` (cross-platform). `run` lanza con `nohup`/`-WindowStyle Hidden` — sobreviven al cierre de SSH. `stop` mata por PID file con fallback a puerto.
 
 ## Decisiones de diseño clave
 
@@ -861,11 +862,13 @@ Modo más rápido (en uno solo):
 Separado:
 ```powershell
 .\scripts\setup.ps1
-.\scripts\start.ps1
+.\scripts\run.ps1
+# Para frenar: .\scripts\stop.ps1
 ```
 ```bash
 ./scripts/setup.sh
-./scripts/start.sh
+./scripts/run.sh
+# Para frenar: ./scripts/stop.sh
 ```
 
 Si falla algo, intentar manual:
