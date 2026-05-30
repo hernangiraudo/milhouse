@@ -1595,12 +1595,151 @@ async fn run_store_or_503(
         ))
 }
 
-/// GET /api/runs/health → `{available: bool}`. La UI lo usa para
-/// deshabilitar features que dependen de la DB de runs (schedules,
-/// revisión histórica, casos) en vez de mostrar un 503 al apretar.
+/// GET /api/runs/health → `{available, reason?, path?, error?}`.
+/// - `available: true` cuando el RunStore está listo.
+/// - `available: false` cuando no, con `reason` indicando el motivo:
+///   - `"not_configured"`: no hay conexión `runs` declarada.
+///   - `"file_locked"`: el archivo DuckDB está siendo usado por otro
+///     proceso (típicamente otro `milhouse.exe` corriendo). El frontend
+///     puede ofrecer `POST /api/runs/reset` para mover el archivo
+///     lockeado a `.bak.<ts>` y crear uno nuevo.
+///   - `"io_error"`: cualquier otro error abriendo el archivo.
+///   - `"other"`: error genérico (incluye fallas de schema).
+/// La UI usa esto para deshabilitar features que dependen de la DB de
+/// runs (schedules, revisión histórica, casos) en vez de mostrar un 503
+/// al apretar, y para ofrecer reset cuando aplica.
 pub async fn runs_health(State(state): State<AppState>) -> Json<Value> {
     let available = state.run_store.read().await.is_some();
-    Json(json!({ "available": available }))
+    if available {
+        return Json(json!({ "available": true }));
+    }
+
+    // No está disponible: reintentamos abrir on-demand para clasificar
+    // el motivo. Esto cubre el caso "el archivo se lockeó después del
+    // startup" o "el usuario corrigió la config y queremos un detalle".
+    let file = state.pool.snapshot_file().await;
+    let runs_conn = file
+        .connections
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(crate::runs::RUNS_CONNECTION));
+    let Some(conn) = runs_conn else {
+        return Json(json!({
+            "available": false,
+            "reason": "not_configured",
+        }));
+    };
+    let path = match &conn.kind {
+        crate::config::connections::ConnectionKind::Duckdb { path } => Some(path.clone()),
+        _ => None,
+    };
+    // Intentamos abrir el archivo sin afectar el store global. Si falla,
+    // clasificamos por mensaje (Windows da "process cannot access" cuando
+    // está lockeado).
+    let probe: Option<String> = match crate::runs::RunStore::open(&state.pool).await {
+        Ok(Some(_)) => None,
+        Ok(None) => Some("connection resolves but RunStore::open returned None".into()),
+        Err(e) => Some(format!("{e:#}")),
+    };
+    let reason = match &probe {
+        None => "transient",
+        Some(msg) => {
+            let lower = msg.to_ascii_lowercase();
+            if lower.contains("being used by another process")
+                || lower.contains("process cannot access")
+                || lower.contains("could not set lock")
+                || lower.contains("could not lock")
+            {
+                "file_locked"
+            } else if lower.contains("io error") || lower.contains("os error") {
+                "io_error"
+            } else {
+                "other"
+            }
+        }
+    };
+    Json(json!({
+        "available": false,
+        "reason": reason,
+        "path": path,
+        "error": probe,
+    }))
+}
+
+/// POST /api/runs/reset → renombra el archivo de la DB de runs a
+/// `<path>.bak.<timestamp>` (si existe) y reintenta abrir un store
+/// fresco. Útil cuando el archivo quedó lockeado por otro proceso o
+/// se corrompió. Devuelve `{ok, backup_path?}` o un 4xx con detalle.
+pub async fn runs_reset(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let file = state.pool.snapshot_file().await;
+    let conn = file
+        .connections
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(crate::runs::RUNS_CONNECTION))
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            "no hay una conexión `runs` definida — configurala primero".to_string(),
+        ))?;
+    let path = match &conn.kind {
+        crate::config::connections::ConnectionKind::Duckdb { path } => path.clone(),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "la conexión `runs` no es de tipo duckdb — solo se puede resetear DuckDB".to_string(),
+            ));
+        }
+    };
+
+    // 1) Soltar el store actual si existe (drop cierra el Connection y
+    // libera el lock que tenga este proceso).
+    {
+        let mut guard = state.run_store.write().await;
+        *guard = None;
+    }
+    // El pool además puede tener una connection abierta por get_duckdb.
+    // Invalidamos su cache para forzar reabrir desde cero.
+    state.pool.invalidate_all().await;
+
+    // 2) Renombrar el archivo a .bak.<timestamp> si existe. Si no existe,
+    // seguimos — abrir creará uno nuevo.
+    let backup_path: Option<String> = if std::path::Path::new(&path).exists() {
+        let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let bak = format!("{path}.bak.{ts}");
+        std::fs::rename(&path, &bak).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("no se pudo renombrar {path} → {bak}: {e}"),
+            )
+        })?;
+        // También removemos el .wal si existe (DuckDB puede dejarlo).
+        let wal = format!("{path}.wal");
+        let _ = std::fs::remove_file(&wal);
+        Some(bak)
+    } else {
+        None
+    };
+
+    // 3) Reintentar abrir el store. Esto creará el archivo nuevo.
+    match crate::runs::RunStore::open(&state.pool).await {
+        Ok(Some(store)) => {
+            let mut guard = state.run_store.write().await;
+            *guard = Some(std::sync::Arc::new(store));
+            Ok(Json(json!({
+                "ok": true,
+                "backup_path": backup_path,
+                "path": path,
+            })))
+        }
+        Ok(None) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "el archivo se reseteó pero la conexión `runs` no se pudo resolver".to_string(),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("no se pudo abrir el nuevo archivo de runs: {e:#}"),
+        )),
+    }
 }
 
 pub async fn list_run_history(

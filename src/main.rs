@@ -199,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
         // Histórico desde la DB de runs
         .route("/api/runs", get(routes::list_run_history))
         .route("/api/runs/health", get(routes::runs_health))
+        .route("/api/runs/reset", post(routes::runs_reset))
         .route("/api/runs/:id", delete(routes::delete_run))
         .route("/api/runs/:id/steps", get(routes::list_run_steps))
         .route(

@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { aiAvailable, aiModifyStep, listConnections } from "@/lib/api";
+import {
+  aiAvailable,
+  aiModifyStep,
+  humanizeApiError,
+  listConnections,
+  type FriendlyError,
+} from "@/lib/api";
 
 interface Props {
   currentStep: Record<string, unknown>;
@@ -33,6 +39,7 @@ export function StepAIModifyDialog({
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [friendly, setFriendly] = useState<FriendlyError | null>(null);
   const [result, setResult] = useState<{
     step: Record<string, unknown>;
     raw: string;
@@ -64,6 +71,7 @@ export function StepAIModifyDialog({
     if (!instruction.trim()) return;
     setBusy(true);
     setErr(null);
+    setFriendly(null);
     setResult(null);
     try {
       const r = await aiModifyStep({
@@ -76,7 +84,9 @@ export function StepAIModifyDialog({
       });
       setResult(r);
     } catch (e) {
-      setErr(String(e));
+      const f = humanizeApiError(e);
+      if (f) setFriendly(f);
+      else setErr(String(e));
     } finally {
       setBusy(false);
     }
@@ -151,7 +161,27 @@ export function StepAIModifyDialog({
           </pre>
         </details>
 
-        {err && (
+        {friendly && (
+          <div className="bg-red-500/10 border border-red-700 rounded p-3 space-y-1.5">
+            <div className="text-red-300 font-semibold text-sm">
+              ⚠ {friendly.title}
+            </div>
+            <div className="text-sm text-app whitespace-pre-wrap">
+              {friendly.detail}
+            </div>
+            {friendly.helpUrl && (
+              <a
+                href={friendly.helpUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-cyan-300 underline inline-block"
+              >
+                ↗ {friendly.helpLabel ?? friendly.helpUrl}
+              </a>
+            )}
+          </div>
+        )}
+        {err && !friendly && (
           <div className="text-red-400 text-sm bg-red-500/10 border border-red-700 rounded p-2 whitespace-pre-wrap">
             {err}
           </div>

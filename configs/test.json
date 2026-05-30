@@ -17,20 +17,20 @@
     "ComitentesCarteraClientesIncluir"
   ],
   "param_requirements": {
-    "ComitentesCarteraClientes": "optional",
     "ComitentesPrex": "optional",
+    "ComitentesCarteraClientes": "optional",
     "ComitentesPrexIncluir": "optional",
-    "Comitente": "optional",
-    "FechaHasta": "required",
-    "FechaDesde": "required",
     "ComitentesCarteraPropia": "optional",
+    "FechaDesde": "required",
+    "Comitente": "optional",
+    "ComitentesCarteraPropiaIncluir": "optional",
     "ComitentesCarteraClientesIncluir": "optional",
-    "ComitentesCarteraPropiaIncluir": "optional"
+    "FechaHasta": "required"
   },
   "run_defaults": {
-    "ComitentesCarteraPropiaIncluir": "1",
+    "ComitentesCarteraClientesIncluir": "1",
     "ComitentesPrexIncluir": "0",
-    "ComitentesCarteraClientesIncluir": "1"
+    "ComitentesCarteraPropiaIncluir": "1"
   },
   "selected_preset_groups": [
     "c17215 YTD"
@@ -118,12 +118,12 @@
       "dataset_name": null,
       "priority": "normal",
       "kind": "procedural",
-      "input": "Cuenta Corriente",
+      "input": null,
       "engine": "rhai",
-      "script": "let row = this; let keys = map_keys(state); for key in keys { print(key + \": \" + state[key]); } row;",
+      "script": "let keys = params.keys(); for key in keys { print(key + \": \" + params[key]); }",
       "fn_name": null,
       "params": null,
-      "state_init": {},
+      "state_init": null,
       "output_table": null
     }
   ]

@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 import { useTheme } from "@/lib/useTheme";
 import { prettyFormatSql } from "@/lib/sqlFormat";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, humanizeApiError, type FriendlyError } from "@/lib/api";
 
 /** Chequeo rápido del lado cliente: paréntesis y comillas balanceadas.
  *  Ignora caracteres dentro de strings y comentarios. Devuelve la primera
@@ -136,6 +136,7 @@ export function SqlEditor({
   const [reviewing, setReviewing] = useState(false);
   const [review, setReview] = useState<AiReview | null>(null);
   const [reviewErr, setReviewErr] = useState<string | null>(null);
+  const [reviewFriendly, setReviewFriendly] = useState<FriendlyError | null>(null);
   // Sanity check rápido (paréntesis, comillas). Solo informativo.
   const sanityWarn = useMemo(
     () => (value.trim() ? quickSqlSanity(value) : null),
@@ -152,6 +153,7 @@ export function SqlEditor({
     setReviewing(true);
     setReview(null);
     setReviewErr(null);
+    setReviewFriendly(null);
     try {
       const r = await fetch(`${API_BASE}/api/ai/review-sql`, {
         method: "POST",
@@ -165,13 +167,18 @@ export function SqlEditor({
         }),
       });
       if (!r.ok) {
-        setReviewErr(await r.text());
+        const body = await r.text();
+        const f = humanizeApiError(body);
+        if (f) setReviewFriendly(f);
+        else setReviewErr(body);
         return;
       }
       const j = (await r.json()) as { review?: AiReview; raw?: string };
       setReview(j.review ?? null);
     } catch (e) {
-      setReviewErr(String(e));
+      const f = humanizeApiError(e);
+      if (f) setReviewFriendly(f);
+      else setReviewErr(String(e));
     } finally {
       setReviewing(false);
     }
@@ -292,7 +299,7 @@ export function SqlEditor({
       </div>
 
       {/* Resultado del review AI */}
-      {(review || reviewErr) && (
+      {(review || reviewErr || reviewFriendly) && (
         <div className="bg-surface-2 border border-surface rounded p-3 mt-2 space-y-2">
           <div className="flex items-center justify-between">
             <h5 className="text-xs uppercase tracking-wider text-muted">
@@ -303,6 +310,7 @@ export function SqlEditor({
               onClick={() => {
                 setReview(null);
                 setReviewErr(null);
+                setReviewFriendly(null);
               }}
               className="text-xs text-dim hover:text-app"
               title="Cerrar"
@@ -310,7 +318,27 @@ export function SqlEditor({
               ✕
             </button>
           </div>
-          {reviewErr && (
+          {reviewFriendly && (
+            <div className="bg-red-500/10 border border-red-700 rounded p-3 space-y-1.5">
+              <div className="text-red-300 font-semibold text-sm">
+                ⚠ {reviewFriendly.title}
+              </div>
+              <div className="text-sm text-app whitespace-pre-wrap">
+                {reviewFriendly.detail}
+              </div>
+              {reviewFriendly.helpUrl && (
+                <a
+                  href={reviewFriendly.helpUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-cyan-300 underline inline-block"
+                >
+                  ↗ {reviewFriendly.helpLabel ?? reviewFriendly.helpUrl}
+                </a>
+              )}
+            </div>
+          )}
+          {reviewErr && !reviewFriendly && (
             <div className="text-xs text-red-400 whitespace-pre-wrap">
               {reviewErr}
             </div>

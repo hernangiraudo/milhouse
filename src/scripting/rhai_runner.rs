@@ -33,6 +33,16 @@ pub fn run(
     engine.set_max_expr_depths(64, 64);
     engine.set_max_call_levels(64);
 
+    // Redirigir `print(...)` y `debug(...)` del script al panel de logs
+    // del step. Sin esto van a stdout del backend y no se ven en la UI.
+    let reporter_for_print = ctx.reporter.clone();
+    engine.on_print(move |s| reporter_for_print.log(s.to_string()));
+    let reporter_for_debug = ctx.reporter.clone();
+    engine.on_debug(move |s, src, pos| {
+        let src = src.unwrap_or("script");
+        reporter_for_debug.log(format!("[debug {src}:{pos:?}] {s}"));
+    });
+
     let ast: AST = engine
         .compile(script)
         .map_err(|e| anyhow!("rhai compile error: {e}"))?;

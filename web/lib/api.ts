@@ -257,9 +257,31 @@ export async function deletePreload(configName: string): Promise<void> {
 /** Indica si la base de runs está disponible. La UI usa esto para
  *  deshabilitar features que dependen de ella (schedules, casos,
  *  revisión histórica) sin esperar al 503 del POST. */
-export async function runsHealth(): Promise<{ available: boolean }> {
+export interface RunsHealth {
+  available: boolean;
+  /** Motivo cuando available=false: "not_configured" | "file_locked" |
+   *  "io_error" | "other" | "transient". */
+  reason?: string;
+  /** Path al archivo .duckdb cuando se puede inferir desde la conn. */
+  path?: string | null;
+  /** Mensaje crudo del último intento de abrir. */
+  error?: string | null;
+}
+export async function runsHealth(): Promise<RunsHealth> {
   const r = await fetch(`${API_BASE}/api/runs/health`, { cache: "no-store" });
   if (!r.ok) return { available: false };
+  return r.json();
+}
+
+/** Renombra el archivo de la DB de runs a .bak.<ts> (si existe) y crea
+ *  uno nuevo. Útil cuando quedó lockeado por otro proceso o corrupto. */
+export async function runsReset(): Promise<{
+  ok: boolean;
+  backup_path?: string | null;
+  path?: string;
+}> {
+  const r = await fetch(`${API_BASE}/api/runs/reset`, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
@@ -729,4 +751,69 @@ export async function deleteSchedule(id: number): Promise<void> {
   });
   if (!r.ok && r.status !== 204)
     throw new Error(`deleteSchedule ${r.status}`);
+}
+
+/** Error de Anthropic ya procesado por el backend (`humanize_anthropic_error`)
+ *  o detectado heurísticamente desde el mensaje crudo. Incluye un título y
+ *  opcionalmente un link de ayuda relevante. */
+export interface FriendlyError {
+  title: string;
+  detail: string;
+  helpUrl?: string;
+  helpLabel?: string;
+}
+
+/** Detecta errores conocidos (típicamente de la Anthropic API) y devuelve
+ *  un FriendlyError con título + detalle + link. Si no matchea ningún
+ *  patrón, devuelve null — el caller muestra el string crudo. */
+export function humanizeApiError(raw: unknown): FriendlyError | null {
+  const s = String(raw);
+  const lower = s.toLowerCase();
+  if (lower.includes("saldo suficiente") || lower.includes("credit balance")) {
+    return {
+      title: "Sin saldo en la cuenta de Anthropic",
+      detail:
+        "La cuenta cuya ANTHROPIC_API_KEY está cargada no tiene créditos disponibles. " +
+        "Cargá créditos o configurá otra key con saldo " +
+        "(./scripts/setup_apikey.{ps1,sh}) y reiniciá el backend.",
+      helpUrl: "https://console.anthropic.com/settings/billing",
+      helpLabel: "Ir a Billing en console.anthropic.com",
+    };
+  }
+  if (lower.includes("anthropic_api_key") && lower.includes("no está")) {
+    return {
+      title: "ANTHROPIC_API_KEY no configurada",
+      detail:
+        "No hay API key cargada en el backend. Configurala con " +
+        "./scripts/setup_apikey.{ps1,sh} y reiniciá el backend.",
+    };
+  }
+  if (lower.includes("no es válida") || lower.includes("invalid x-api-key")) {
+    return {
+      title: "API key de Anthropic inválida",
+      detail:
+        "La ANTHROPIC_API_KEY no es válida o fue revocada. Generá una nueva y " +
+        "configurala con ./scripts/setup_apikey.{ps1,sh}, después reiniciá el backend.",
+      helpUrl: "https://console.anthropic.com/settings/keys",
+      helpLabel: "Administrar API keys",
+    };
+  }
+  if (lower.includes("rate limit") || lower.includes("limitando")) {
+    return {
+      title: "Rate limit de Anthropic",
+      detail:
+        "Anthropic está limitando los pedidos. Esperá unos segundos y reintentá. " +
+        "Si pasa seguido, revisá tus límites o subí de plan.",
+      helpUrl: "https://console.anthropic.com/settings/limits",
+      helpLabel: "Ver mis límites",
+    };
+  }
+  if (lower.includes("sobrecargada") || lower.includes("overloaded")) {
+    return {
+      title: "Anthropic está sobrecargada",
+      detail:
+        "La API de Anthropic está experimentando alta demanda. Reintentá en unos segundos.",
+    };
+  }
+  return null;
 }

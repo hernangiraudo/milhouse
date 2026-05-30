@@ -212,11 +212,7 @@ async fn call_anthropic_for_step(
     let status = resp.status();
     let body_text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(anyhow!(
-            "Anthropic API {}: {}",
-            status,
-            body_text.chars().take(500).collect::<String>()
-        ));
+        return Err(anyhow!("{}", humanize_anthropic_error(status, &body_text)));
     }
     let body_json: Value =
         serde_json::from_str(&body_text).context("parsing Anthropic response")?;
@@ -552,11 +548,7 @@ pub async fn review_sql(req: ReviewSqlReq) -> Result<ReviewSqlResp> {
     let status = resp.status();
     let body_text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(anyhow!(
-            "Anthropic API {}: {}",
-            status,
-            body_text.chars().take(500).collect::<String>()
-        ));
+        return Err(anyhow!("{}", humanize_anthropic_error(status, &body_text)));
     }
     let body_json: Value =
         serde_json::from_str(&body_text).context("parsing Anthropic response")?;
@@ -585,4 +577,71 @@ pub async fn review_sql(req: ReviewSqlReq) -> Result<ReviewSqlResp> {
         )
     })?;
     Ok(ReviewSqlResp { review, raw })
+}
+
+/// Convierte un error HTTP de la API de Anthropic en un mensaje en
+/// castellano útil para el usuario. Cubre los casos más comunes
+/// (saldo bajo, key inválida, rate limit, modelo deprecado, overload)
+/// y, si no matchea ninguno, devuelve un fallback con la razón cruda.
+fn humanize_anthropic_error(status: reqwest::StatusCode, body_text: &str) -> String {
+    // Intentamos parsear el JSON de error de Anthropic:
+    //   { "error": { "type": "...", "message": "..." } }
+    let parsed: Option<(String, String)> = serde_json::from_str::<Value>(body_text)
+        .ok()
+        .and_then(|v| {
+            let err = v.get("error")?;
+            let etype = err.get("type")?.as_str()?.to_string();
+            let emsg = err.get("message")?.as_str()?.to_string();
+            Some((etype, emsg))
+        });
+
+    let (etype, emsg) = match parsed {
+        Some(x) => x,
+        None => {
+            return format!(
+                "Anthropic API devolvió HTTP {} sin cuerpo JSON. Probá de nuevo y \
+                 si persiste contactá soporte. Respuesta: {}",
+                status,
+                body_text.chars().take(200).collect::<String>()
+            )
+        }
+    };
+
+    let msg_lower = emsg.to_ascii_lowercase();
+
+    // Casos específicos por contenido del mensaje (más específicos primero).
+    if msg_lower.contains("credit balance") || msg_lower.contains("credit_balance") {
+        return "Tu cuenta de Anthropic no tiene saldo suficiente. Andá a \
+                https://console.anthropic.com/settings/billing y agregá \
+                créditos, o configurá otra ANTHROPIC_API_KEY con saldo \
+                (./scripts/setup_apikey.{ps1,sh}) y reiniciá el backend."
+            .to_string();
+    }
+    if msg_lower.contains("invalid x-api-key") || msg_lower.contains("authentication") {
+        return "La ANTHROPIC_API_KEY configurada no es válida. Verificala en \
+                https://console.anthropic.com/settings/keys y volvé a configurarla \
+                con ./scripts/setup_apikey.{ps1,sh}, después reiniciá el backend."
+            .to_string();
+    }
+    if etype == "rate_limit_error" || status.as_u16() == 429 {
+        return "Anthropic te está limitando por rate limit. Esperá unos segundos \
+                y reintentá. Si pasa seguido, revisá tus límites en \
+                https://console.anthropic.com/settings/limits."
+            .to_string();
+    }
+    if etype == "overloaded_error" || status.as_u16() == 529 {
+        return "La API de Anthropic está sobrecargada en este momento. \
+                Reintentá en unos segundos."
+            .to_string();
+    }
+    if msg_lower.contains("model") && (msg_lower.contains("not found") || msg_lower.contains("does not exist")) {
+        return format!(
+            "El modelo solicitado no existe o no está disponible para tu cuenta. \
+             Detalle: {}",
+            emsg
+        );
+    }
+
+    // Fallback con el mensaje original (limpio, sin el wrapper JSON).
+    format!("Anthropic API ({}): {}", status, emsg)
 }

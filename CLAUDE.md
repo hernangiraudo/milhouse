@@ -422,10 +422,16 @@ GET    /api/ai/available                           {available: bool}
 GET    /api/users  /  POST  /  DELETE :name  /  POST /reload
 
 GET    /api/runs                                   histórico desde DB
-GET    /api/runs/health                            {available: bool} — usado
-                                                    por el frontend para
-                                                    deshabilitar UI que
-                                                    necesita la DB de runs
+GET    /api/runs/health                            {available, reason?, path?,
+                                                    error?} — el frontend
+                                                    deshabilita UI que requiere
+                                                    runs y muestra banner de
+                                                    "Crear base nueva" cuando
+                                                    reason=file_locked
+POST   /api/runs/reset                             renombra el archivo de runs
+                                                    a .bak.<ts> y crea uno
+                                                    nuevo. Para recovery cuando
+                                                    el archivo está lockeado
 DELETE /api/runs/:id                               bloquea si hay casos abiertos
 GET    /api/runs/:id/steps
 GET    /api/runs/:id/steps/:uid/logs
@@ -892,6 +898,53 @@ copiar `.env.example`):
 ## Sesión: estado al cierre
 
 Última cosa que se hizo:
+- **Recovery de la DB de runs cuando el archivo está lockeado**:
+  - `GET /api/runs/health` enriquecido: cuando `available: false`,
+    devuelve `reason` (`not_configured` | `file_locked` | `io_error` |
+    `other` | `transient`) + `path` (inferido desde la spec de la
+    conexión `runs`) + `error` (mensaje crudo del último intento).
+    Para clasificar, reintenta abrir on-demand y matchea el mensaje
+    contra patrones del SO ("being used by another process", "could
+    not set lock", etc).
+  - `POST /api/runs/reset` nuevo: suelta el store actual, invalida el
+    cache del pool para esa conexión, renombra el archivo a
+    `<path>.bak.<YYYYMMDD_HHMMSS>` (preservando el histórico), borra
+    el `.wal` y reabre. Devuelve `{ok, backup_path, path}`.
+  - `ConnectionPool::invalidate(name)` y `invalidate_all()` agregados
+    al pool. La segunda vacía todo el cache; la primera saca una
+    conexión por nombre case-insensitive.
+  - `<RunsHealthBar />` nuevo componente — banner ámbar global
+    (`bg-amber-200 text-amber-950`, alto contraste) que aparece SOLO
+    cuando `available: false` y la razón es recuperable (`file_locked`
+    o `io_error`). Botón "Crear base nueva" con confirmación y
+    detalles colapsables del error crudo. Polling cada 20s. Montado
+    en `AppShell` debajo del `BackendStatusBar`.
+- **Errores de Anthropic API humanizados**:
+  - Backend (`src/ai/mod.rs`): nueva helper
+    `humanize_anthropic_error(status, body_text)` que parsea el JSON
+    de error y devuelve mensajes en castellano para los casos comunes
+    (saldo bajo → sugiere billing/setup_apikey; key inválida → link a
+    console; rate limit 429; overloaded 529; modelo no encontrado).
+    Si no matchea ninguno, usa el `message` crudo (sin el wrapper
+    JSON). Aplicada en `build_step`/`modify_step` y `review_sql`.
+  - Frontend (`web/lib/api.ts`): `FriendlyError { title, detail,
+    helpUrl?, helpLabel? }` + `humanizeApiError(raw)` que detecta los
+    mismos casos por substring. Los tres diálogos de IA
+    (`MilhouseAIDialog`, `StepAIModifyDialog`, `SqlEditor`) ahora
+    muestran un banner rojo bold con título + detalle + link `↗`
+    cuando el error matchea (caso típico: "Sin saldo en la cuenta de
+    Anthropic" + link a billing). Si no matchea, sigue mostrando el
+    string crudo.
+- **Rhai `print()` y `debug()` van al panel de logs del step**:
+  - `engine.on_print` y `engine.on_debug` enganchados al
+    `reporter.log()` en `src/scripting/rhai_runner.rs`. Antes los
+    `print(...)` desde scripts iban a stdout del backend y no se
+    veían en la UI. Importante para scripts tipo "imprimir params /
+    debug".
+  - Para scripts que solo manipulan params (sin tabla input), recordar
+    que se usa `"input": null` (ya soportado por `StepSpec::Procedural`
+    con `Option<String>`) y dentro del script se itera con
+    `params.keys()`.
 - **Fechas en formato DD-MM-YYYY con resuelto dinámico** (frontend):
   - Nuevas helpers en `web/components/ParametersPanel.tsx`:
     - `formatIsoAsDDMM("2026-05-29")` → `"29-05-2026"`.

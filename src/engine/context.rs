@@ -220,6 +220,21 @@ impl ConnectionPool {
         });
     }
 
+    /// Saca una conexión del cache por nombre (case-insensitive). La
+    /// próxima `get_*` la reabrirá desde cero. Útil cuando hay que
+    /// soltar handles físicos (ej. resetear el archivo de runs).
+    pub async fn invalidate(&self, name: &str) {
+        let mut cache = self.cache.lock().await;
+        cache.retain(|k, _| !k.eq_ignore_ascii_case(name));
+    }
+
+    /// Vacía todo el cache de conexiones. La próxima `get_*` reabrirá
+    /// desde la spec actual.
+    pub async fn invalidate_all(&self) {
+        let mut cache = self.cache.lock().await;
+        cache.clear();
+    }
+
     /// Devuelve la conexión abierta (cualquier tipo) para el nombre dado
     /// (o la default si es None). Abre lazy y cachea.
     pub async fn get_any(&self, name: Option<&str>) -> Result<Arc<OpenedConnection>> {
